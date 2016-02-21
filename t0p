@@ -1,0 +1,560 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use Digest;
+use File::Basename qw(basename dirname);
+use Getopt::Long
+    qw(:config posix_default gnu_compat bundling no_ignore_case);
+
+use constant T0VERSION => 1;
+
+sub usage;
+sub fatal;
+
+my $prog = basename($0);
+if ($prog eq 't0p') {
+    usage if !@ARGV;
+    $prog = 't0'.shift;
+}
+
+my $root = $ENV{'T0P_ROOT'} ||= '/var/local/t0p';
+my ($drive, $tape, $device, $queue, $block_size, $verbose, $dryrun);
+my (%props);
+my (%label, %status);
+my @tmp;  # Anything that should be deleted when we exit
+my @common_options = (
+    'd=s' => \$drive,
+    't=s' => \$tape,
+    'q=s' => \$queue,
+    'b=i' => \$block_size,
+    'v'   => \$verbose,
+    'n'   => \$dryrun,
+);
+
+(my $cmd = $prog) =~ s/^t0// or fatal "bizarre invocation: $prog";
+&{ __PACKAGE__->can('prog_'.$cmd) || fatal "unrecognized invocation: $cmd" };
+
+# Subprograms
+
+sub prog_queue {
+    my ($add, $create, $list, $symlink);
+    GetOptions(
+        @common_options,
+        'a' => \$add,
+        'c' => \$create,
+        'l' => \$list,
+        's' => \$symlink,
+    ) or usage;
+    init_defaults();
+    $list = 1 if !$add && !$create;
+    if ($list) {
+        my @jobs = jobs_in_queue();
+        print $_, "\n" for @jobs;
+    }
+    elsif ($add) {
+        usage '-a QDIR JOB' if !@ARGV;
+        my $job = shift @ARGV;
+        $job = "$root/job/$job" if $job !~ m{^/};
+        fatal "no such directory: $job" if !-d $job;
+        my @batches = batches_in_job($job, 'b');
+        fatal "no unprocessed batches in job $job" if !@batches;
+        my $job_id = uuid();
+        mkdir "$job/\@new" or fatal "mkdir $job/\@new";
+        if ($symlink) {
+            symlink $job, "$queue/$job_id"
+                or fatal "symlink $queue/$job_id: $!";
+        }
+        else {
+            rename $job, "$queue/$job_id"
+                or fatal "symlink $queue/$job_id: $!";
+        }
+    }
+    elsif ($create) {
+        fatal 'not yet implemented: -c';
+    }
+}
+
+sub prog_job {
+    my ($add, $create, $list, %prop);
+    GetOptions(
+        @common_options,
+        'a' => \$add,
+        'c' => \$create,
+        'l' => \$list,
+        'p=s' => sub {
+            usage if $_[1] !~ /^([^=]+)=(.*)$/;
+            $prop{$1} = $2;
+        },
+    ) or usage;
+    init_defaults();
+    if ($create) {
+        # Create a new job
+        usage if @ARGV > 1;
+        my $uuid = uuid();
+        my $job = "$root/job/$uuid";
+        if (@ARGV) {
+            my ($dir) = @ARGV;
+            $dir =~ m{^/} or usage;
+            symlink $dir, $job or fatal "symlink $dir $job: $!";
+        }
+        else {
+            mkdir $job or fatal "mkdir $job: $!";
+        }
+        fatal "create $job/job: file already exists" if -e "$job/job";
+        open my $fh, '>', "$job/job" or fatal "open $job/job: $!";
+        print $fh "\%job\nid $uuid\ncreated ", time, "\n";
+        foreach (sort keys %prop) {
+            print $fh $_, ' ', $prop{$_}, "\n";
+        }
+        print $fh "\n";
+        close $fh;
+        print $uuid, "\n";
+    }
+    elsif ($add) {
+        # Add a batch of files to an existing job
+        usage 't0job -a JOBDIR [-p PROP=VALUE]... < MANIFEST' if !@ARGV;
+        my $job = shift @ARGV;
+        $job = "$root/job/$job" if $job !~ m{^/};
+        my @files = @ARGV ? @ARGV : <STDIN>;
+        fatal 'no files to append to job' if !@files;
+        chomp @files;
+        my $batch = 0;
+        open my $fh, '+>>', "$job/job" or fatal "open $job/job: $!";
+        seek $fh, 0, 0 or fatal "seek $job/job: $!";
+        while (<$fh>) {
+            $batch = $1 + 1 if /^batch ([0-9]+) added/ && $1 >= $batch;
+        }
+        my $t0 = time;
+        my $num = scalar @files;
+        my $size = size_total(@files);
+        print $fh "batch $batch added $t0 count $num size $size\n";
+        undef $fh;
+        open $fh, '>', "$job/b$batch" or fatal "create $job/b$batch: $!";
+        print $fh "\%batch\nnumber $batch\ncreated $t0\nsize $size\ncount $num\n";
+        foreach (sort keys %prop) {
+            print $fh $_, ' ', $prop{$_}, "\n";
+        }
+        print $fh "\n\%files\n";
+        print $fh $_, "\n" for @files;
+        print $fh "\n";
+        close $fh;
+    }
+    elsif ($list) {
+        print "Q $_\n" for jobs_in_queue();
+        print "- $_\n" for jobs_not_in_queue();
+    }
+}
+
+sub prog_label {
+    my ($check, $write, $force, $use_hash, $prop);
+    GetOptions(
+        @common_options,
+        'k' => \$check,
+        'w' => \$write,
+        'f' => \$force,
+        'h' => \$use_hash,
+        'p=s' => \$prop,
+    ) or usage;
+    init_defaults();
+    read_label();
+    my ($label, $hash) = @label{qw(label hash)};
+    if ($check) {
+        usage if @ARGV != 1;
+        my ($expected, $found) = @ARGV;
+        my $blather;
+        if ($use_hash) {
+            ($found, $blather) = ($hash, "hash $hash");
+        }
+        elsif ($prop) {
+            my ($p, $pval) = ($prop, $label{$prop});
+            ($found, $blather) = ($pval, join(' ', $p, $pval // '[undefined]'));
+        }
+        else {
+            ($found, $blather) = ($label, $label);
+        }
+        if (!defined $found) {
+            print STDERR "unrecognized label (hash $hash)\n" if $verbose;
+            exit 2;
+        }
+        elsif ($found ne $expected) {
+            print STDERR "wrong label: found $blather\n" if $verbose;
+            exit 2;
+        }
+        else {
+            print STDERR "verified: $blather\n" if $verbose;
+        }
+    }
+    elsif ($write) {
+        usage if @ARGV < 1;
+        if (defined($label) && !$force) {
+            print STDERR "found label $label (hash $hash), use -f to force relabel\n";
+            exit 2 if !$dryrun;
+        }
+        my $label = shift @ARGV;
+        %label = (
+            label => $label,
+            ( map { /^([^=]+)=(.*)$/ or usage; $1 => $2 } @ARGV ),
+        );
+        write_label();
+    }
+    else {
+        if (!defined $label{label}) {
+            print STDERR "unrecognized label\n";
+            exit 2;
+        }
+        elsif ($verbose) {
+            print "label: $label{label}\n",
+                "hash: $label{hash}\n",
+                "t0version: $label{t0version}\n";
+            if (keys(%label) > 2) {
+                foreach (sort keys %label) {
+                    next if /^(label|hash|t0version)$/;
+                    printf "%s: %s\n", $_, $label{$_};
+                }
+            }
+        }
+        elsif ($use_hash) {
+            print $label{hash}, "\n";
+        }
+        elsif ($prop) {
+            my $pval = $label{$prop} // '[undefined]';
+            print $pval, "\n";
+        }
+        else {
+            print $label{label}, "\n";
+        }
+    }
+}
+
+sub prog_write {
+    # usage: t0write [ -a | JOB BATCH... ]
+    my ($all);
+    GetOptions(
+        @common_options,
+        'a' => \$all,
+        'n' => \$dryrun,
+    );
+    $device = '/dev/null' if $dryrun;
+    init_defaults();
+    my @job_dirs;
+    if ($all) {
+        usage 'write [ -a | JOB BATCH... ]' if @ARGV;
+        @job_dirs = map { "$queue/$_" } jobs_in_queue();
+    }
+    else {
+        usage 'write [ -a | JOB BATCH... ]' if @ARGV < 1;
+        @job_dirs = map { "$queue/$_" } @ARGV;
+    }
+    foreach my $job_dir (@job_dirs) {
+        my @batches = batches_in_job($job_dir, 'b');
+        next if !@batches;
+        read_label() if !%label && !$dryrun;
+        my $job = read_job("$job_dir/job");
+        process_batches($job, @batches);
+        my $job_name = dirname($job_dir);
+        rename $job_dir, "$root/job/archive/$job_name" or fatal "rename $job_dir $root/archive/$job_name: $!";
+    }
+}
+
+# --- Functions
+
+sub read_job {
+    my ($job_file) = @_;
+    open my $fh, '<', $job_file or die "open $job_file: $!";
+    my %job;
+LOOP:
+    while (<$fh>) {
+        if (/^%job$/) {
+            while (<$fh>) {
+                last LOOP if /^$/;
+                $job{$1} = $2 if /^(\S+) (.*)/;
+            }
+        }
+    }
+    return \%job;
+}
+
+sub size_total {
+    my $size = 0;
+    foreach (@_) {
+        next if ! -f;
+        $size += -s _;
+    }
+    return $size;
+}
+
+sub usage {
+    print STDERR "usage: $prog $_\n" if @_;
+    print STDERR "usage: $prog [OPTION...] [ARG...]}}\n" if !@_;
+    exit 1;
+}
+
+sub fatal {
+    print STDERR "$prog: ", $_, "\n" for @_;
+    exit 2;
+}
+
+sub init_defaults {
+    $drive //= readlink("$root/drive/default");
+    $drive = "$root/drive/$drive" if $drive !~ m{^/};
+    $device //= -e "$drive/device" ? "$drive/device" : '/dev/nst0';
+    $block_size //= 32768;
+    return if defined $queue && $queue =~ m{^/};
+    $queue = defined $queue ? "$drive/queue/$queue" : "$drive/queue";
+}
+
+sub mt {
+    open my $fh, '-|', 'mt', '-f', $device, @_ or fatal "mt: $!";
+    return $fh;
+}
+
+sub tapeinfo {
+    open my $fh, '-|', 'tapeinfo', '-f', $device or fatal "tapeinfo: $!";
+    return $fh;
+}
+
+sub get_status {
+    return %status = (
+        filenum => 0,
+        blocknum => 0,
+        partition => 0,
+        online => 1,
+        eod => 1,
+        eof => 0,
+        bot => 1,
+        blocksize => $block_size,
+    ) if $dryrun;
+    my $fh = mt('status');
+    while (<$fh>) {
+        $status{filenum}   = $1 if /file number[=: ]+([0-9]+)/i;
+        $status{blocknum}  = $1 if /block number[=: ]+([0-9]+)/i;
+        $status{partition} = $1 if /partition[=: ]+([0-9]+)/i;
+        $status{online}    = 1  if /\bONLINE\b/i;
+        $status{eod}       = 1  if /\bEOD\b/i;
+        $status{eof}       = 1  if /\bEOF\b/i;
+        $status{bot}       = 1  if /\bBOT\b/i;
+        $status{blocksize} = $1 if /block size[=: ]+([0-9]+)/i;
+    }
+    close $fh or fatal "mt status: $!";
+    $fh = tapeinfo();
+    while (<$fh>) {
+        $status{position}  = $1 if /block position[=: ]+([0-9]+)/i;
+    }
+    close $fh or fatal "tapeinfo: $!";
+}
+
+sub read_label {
+    mt('rewind') or fatal "mt rewind: $!";
+    open my $fh, '<', $device or fatal "open: $!";
+    my $read = read($fh, my $buf, $block_size)
+        or fatal "read label: $!";
+    close $fh;
+    %label = ();
+    if ($buf =~ /^\At0version:([0-9])\nlabel:([^\n\0]+)\n([^\0]*)\0*\z/) {
+        %label = (
+            t0version => $1,
+            label => $2,
+            map { split /:/, $_, 2 } split /\n/, $3
+        );
+    }
+    my $sha256 = Digest->new('SHA-256');
+    $sha256->add(substr($buf, 0, 2048));
+    $label{hash} = $sha256->hexdigest;
+}
+
+sub write_label {
+    my $label = $label{label};
+    my $fh;
+    if (!$dryrun) {
+        mt('rewind') or fatal "rewind: $!";
+        open $fh, '>', $device or fatal "open: $!";
+    }
+    my $buf = "\x00" x $block_size;
+    my $str = sprintf("t0version:%d\nlabel:%s\ncreated:%s\n", T0VERSION, $label, time);
+    foreach (sort keys %label) {
+        next if /^(label|t0version)$/;
+        $str .= sprintf("%s:%s\n", $_, $label{$_});
+    }
+    substr($buf, 0, length $str) = $str;
+    my $sha256 = Digest->new('SHA-256');
+    $sha256->add($buf);
+    my $hash = $sha256->hexdigest;
+    if ($dryrun) {
+        print STDERR "label that would be written (hash $hash):\n", $str;
+    }
+    else {
+        syswrite($fh, $buf) or fatal "write: $!";
+        close $fh or fatal "close: $!";
+        mt('weof') or fatal "weof: $!";
+        return if !$verbose;
+        print STDERR "label written: $label (hash $hash)\n";
+    }
+}
+
+sub read_manifest {
+    my ($f) = @_;
+    fatal "empty manifest: $f" if !-s $f;
+    open my $fh, '<', $f or fatal "open manifest $f: $!";
+    my @files = <$fh>;
+    fatal "read manifest: $f" if !@files;
+    chomp @files;
+    return @files;
+}
+
+sub process_batches {
+    my ($job, @batches) = @_;
+    get_status();
+    if (!$dryrun) {
+        $status{online} or fatal "no tape\n";
+        mt('eod') if !$dryrun;
+        get_status();
+        $status{eod} or fatal "not EOD\n";
+        $job->{drive} = basename($drive);
+        $job->{device} = $device;
+    }
+    foreach my $batch_file (@batches) {
+        (my $written_file = $batch_file) =~ s{(^|/)b([0-9]+)$}{$1w$2};
+        my $batch = read_batch($batch_file);
+        process_batch($job, $batch);
+        $batch->{tape} = $label{label} // "hash:$label{hash}";
+        my $receipt = make_receipt($batch);
+        if ($dryrun) {
+            print $receipt, "\n";
+            next;
+        }
+        open my $fh, '>>', $batch_file or fatal "open $batch_file: $!";
+        print $fh "\%receipt\n", $receipt, "\n";
+        rename $batch_file, $written_file or fatal "rename $batch_file to $written_file: $!";
+        if ($verbose) {
+            $tape //= '(unknown)';
+            print STDERR "batch $batch->{batch} written to tape $tape at filenum $batch->{filenum}\n";
+        }
+    }
+}
+
+sub read_batch {
+    my ($f) = @_;
+    my (%batch, @files);
+    open my $fh, '<', $f or fatal "open $f: $!";
+    while (<$fh>) {
+        next if /^%batch$/;
+        last if /^$/;
+        next if /^\s*(?:#.*)?$/;
+        fatal "read batch file $f: unrecognized line: $_"
+            if !/^(\S+) (.*)$/;
+        $batch{$1} = $2;
+    }
+    while (<$fh>) {
+        next if /^%files$/;
+        last if /^$/;
+        chomp;
+        push @files, $_;
+    }
+    $batch{files} = \@files;
+    $batch{tape} = $tape if defined $tape;
+    $batch{batch} //= $f;
+    return \%batch;
+}
+
+sub process_batch {
+    my ($job, $batch) = @_;
+    my $batch_id = $batch->{batch};
+    my @files = @{ $batch->{files} };
+    my %result = map { $_ => 'fail' } @files;
+    @$batch{qw(begin filenum errors files results)} = ( time, $status{filenum}, 0, \@files, \%result );
+    my $dir = $batch->{root} // $job->{root};
+    if (defined $dir) {
+        $dir =~ m{^/} or fatal "relative batch root: $dir";
+        chdir $dir or fatal "chdir $dir: $!";
+    }
+    else {
+        chdir '/' or fatal "chdir /: $!";
+    }
+    # Write the archive
+    my $manifest = qx{mktemp -t t0p.$$.manifest.XXXXXX};
+    chomp $manifest;
+    open my $fh, '>', $manifest or die;
+    print $fh $_, "\n" for @files;
+    close $fh;
+    open my $fhafio, "afio -o -A -b $block_size -v -B $device < $manifest 2>&1 |"
+        or fatal "exec afio: $!";
+    push @tmp, $manifest;
+    while (<$fhafio>) {
+        if (/^([0-9]+) (.+) -- okay$/) {
+            $result{$2} = "ok $1";
+        }
+        else {
+            $batch->{errors}++;
+        }
+    }
+    unlink $manifest;
+    close $fhafio or fatal "afio: $!";
+    if ($dryrun) {
+        $status{filenum}++;
+    }
+    else {
+        get_status();
+        $status{eod} or fatal "not EOD after write";
+    }
+    $batch->{end} = time;
+}
+
+sub make_receipt {
+    my ($batch) = @_;
+    my @files = @{ delete $batch->{files} };
+    my %result = %{ delete $batch->{results} };
+    my %batch = %$batch;
+    my @receipt;
+    foreach (sort keys %batch) {
+        push @receipt, "$_ $batch{$_}";
+    }
+    foreach (@files) {
+        my $result = $result{$_};
+        push @receipt, "$result $_";
+    }
+    return join("\n", @receipt) . "\n";
+}
+
+sub jobs_not_in_queue {
+    my @jobs;
+    foreach (glob("$root/job/*/job")) {
+        my @parts = split '/';
+        pop @parts;
+        my $job = pop @parts;
+        push @jobs, $job;
+    }
+    return @jobs;
+}
+
+sub jobs_in_queue {
+    my @job_statuses = glob("$queue/*/\@*");
+    my @jobs;
+    foreach (@job_statuses) {
+        my @parts = split '/';
+        my $status = pop @parts;
+        my $job = pop @parts;
+        push @jobs, $job;
+    }
+    return @jobs;
+}
+
+sub batches_in_job {
+    my $job = shift;
+    my %want = map { $_ => 1 } @_;
+    %want = qw(b 1 r 1 w 1) if !@_;
+    my %batch;
+    foreach (glob("$job/*")) {
+        next if !m{.+/([bwr])([0-9]+)$};
+        $batch{$_} = $1 if $want{$1};
+    }
+    return wantarray ? keys %batch : \%batch;
+}
+
+sub uuid {
+    my $uuid = qx(uuidgen);
+    chomp $uuid;
+    return $uuid;
+}
+
