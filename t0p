@@ -50,13 +50,17 @@ sub prog_queue {
     init_defaults();
     $list = 1 if !$add && !$create;
     if ($list) {
-        usage '-l' if @ARGV;
+        usage '-l [-q QUEUE]' if @ARGV;
         my @jobs = jobs_in_queue();
         print $_, "\n" for @jobs;
     }
     elsif ($add) {
-        usage '-a JOB' if !@ARGV;
+        usage '-a [-q QUEUE] [-s] JOB' if !@ARGV;
         my $job = shift @ARGV;
+        if ($symlink) {
+            fatal "job symlinks must be absolute: $job"
+                if $job !~ m{^/};
+        }
         $job = "$root/job/$job" if $job !~ m{^/};
         fatal "no such directory: $job" if !-d $job;
         my @batches = batches_in_job($job, 'b');
@@ -73,7 +77,7 @@ sub prog_queue {
         }
     }
     elsif ($create) {
-        usage '-c QUEUE' if !@ARGV;
+        usage '-c -q QUEUE' if !@ARGV;
         fatal 'not yet implemented: -c';
     }
 }
@@ -235,7 +239,7 @@ sub prog_write {
         @common_options,
         'a' => \$all,
         'n' => \$dryrun,
-    );
+    ) or usage;
     $device = '/dev/null' if $dryrun;
     init_defaults();
     my @job_dirs;
@@ -255,6 +259,40 @@ sub prog_write {
         process_batches($job, @batches);
         my $job_name = dirname($job_dir);
         rename $job_dir, "$root/job/archive/$job_name" or fatal "rename $job_dir $root/archive/$job_name: $!";
+    }
+}
+
+sub prog_stat {
+    # usage: t0stat [-v] [DRIVE]
+    GetOptions(
+        @common_options,
+    ) or usage;
+    init_defaults();
+    get_status();
+    printf <<'EOS', $drive, readlink($device);
+drive        : %s
+device       : %s
+EOS
+    if ($status{online}) {
+        my @flags;
+        foreach (qw(bot eof eod)) {
+            push @flags, $_ if $status{$_};
+        }
+        @flags = ('--') if !@flags;
+        printf <<'EOS', @status{qw(filenum partition blocksize blocknum)}, join(',',@flags);
+online       : yes
+file number  : %d
+partition    : %d
+block size   : %d
+block number : %d
+flags        : %s
+EOS
+    }
+    else {
+        printf <<'EOS', @status{qw(blocksize)};
+online       : no
+block size   : %d
+EOS
     }
 }
 
@@ -287,11 +325,12 @@ sub write_job {
 id %s
 EOS
     foreach (sort keys %job) {
-        print $fh $_, ' ', $prop{$_}, "\n";
+        print $fh $_, ' ', $job{$_}, "\n";
     }
     print $fh "\n\%log\n";
     close $fh;
 }
+
 sub size_total {
     my $size = 0;
     foreach (@_) {
@@ -345,7 +384,7 @@ sub get_status {
     my $fh = mt('status');
     while (<$fh>) {
         $status{filenum}   = $1 if /file number[=: ]+([0-9]+)/i;
-        $status{blocknum}  = $1 if /block number[=: ]+([0-9]+)/i;
+        $status{blocknum}  = $1 if /block number[=: ]+(-?[0-9]+)/i;
         $status{partition} = $1 if /partition[=: ]+([0-9]+)/i;
         $status{online}    = 1  if /\bONLINE\b/i;
         $status{eod}       = 1  if /\bEOD\b/i;
@@ -434,7 +473,7 @@ sub process_batches {
         (my $written_file = $batch_file) =~ s{(^|/)b([0-9]+)$}{$1w$2};
         my $batch = read_batch($batch_file);
         process_batch($job, $batch);
-        $batch->{tape} = $label{label} // "hash:$label{hash}";
+        $batch->{tape} = $label{label} // "hash=$label{hash}";
         my $receipt = make_receipt($batch);
         if ($dryrun) {
             print $receipt, "\n";
@@ -444,7 +483,7 @@ sub process_batches {
         print $fh "\%receipt\n", $receipt, "\n";
         rename $batch_file, $written_file or fatal "rename $batch_file to $written_file: $!";
         if ($verbose) {
-            $tape //= '(unknown)';
+            $tape //= '[unknown]';
             print STDERR "batch $batch->{batch} written to tape $tape at filenum $batch->{filenum}\n";
         }
     }
