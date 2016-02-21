@@ -50,11 +50,12 @@ sub prog_queue {
     init_defaults();
     $list = 1 if !$add && !$create;
     if ($list) {
+        usage '-l' if @ARGV;
         my @jobs = jobs_in_queue();
         print $_, "\n" for @jobs;
     }
     elsif ($add) {
-        usage '-a QDIR JOB' if !@ARGV;
+        usage '-a JOB' if !@ARGV;
         my $job = shift @ARGV;
         $job = "$root/job/$job" if $job !~ m{^/};
         fatal "no such directory: $job" if !-d $job;
@@ -72,6 +73,7 @@ sub prog_queue {
         }
     }
     elsif ($create) {
+        usage '-c QUEUE' if !@ARGV;
         fatal 'not yet implemented: -c';
     }
 }
@@ -103,13 +105,11 @@ sub prog_job {
             mkdir $job or fatal "mkdir $job: $!";
         }
         fatal "create $job/job: file already exists" if -e "$job/job";
-        open my $fh, '>', "$job/job" or fatal "open $job/job: $!";
-        print $fh "\%job\nid $uuid\ncreated ", time, "\n";
-        foreach (sort keys %prop) {
-            print $fh $_, ' ', $prop{$_}, "\n";
-        }
-        print $fh "\n";
-        close $fh;
+        write_job("$job/job", {
+            id => $uuid,
+            created => time,
+            %prop,
+        });
         print $uuid, "\n";
     }
     elsif ($add) {
@@ -276,6 +276,22 @@ LOOP:
     return \%job;
 }
 
+sub write_job {
+    my ($job_file, $job) = @_;
+    my %job = %$job;
+    my $id = delete $job{id};
+    open my $fh, '>', "$job_file/job"
+        or fatal "create $job_file/job: $!";
+    printf $fh <<'EOS', $id;
+%job
+id %s
+EOS
+    foreach (sort keys %job) {
+        print $fh $_, ' ', $prop{$_}, "\n";
+    }
+    print $fh "\n\%log\n";
+    close $fh;
+}
 sub size_total {
     my $size = 0;
     foreach (@_) {
