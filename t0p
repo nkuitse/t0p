@@ -59,16 +59,17 @@ sub prog_queue {
     }
     elsif ($add) {
         usage '-a [-q QUEUE] [-s] JOB' if !@ARGV;
-        my $job = shift @ARGV;
+        my $job_dir = shift @ARGV;
         if ($symlink) {
-            fatal "job symlinks must be absolute: $job"
-                if $job !~ m{^/};
+            fatal "job symlinks must be absolute: $job_dir"
+                if $job_dir !~ m{^/};
         }
-        $job = "$root/job/$job" if $job !~ m{^/};
-        fatal "no such directory: $job" if !-d $job;
-        my @batches = batches_in_job($job, 'b');
-        fatal "no unprocessed batches in job $job" if !@batches;
-        my $job_id = uuid();
+        $job_dir = "$root/job/$job_dir" if $job_dir !~ m{^/};
+        fatal "no such directory: $job_dir" if !-d $job_dir;
+        my @batches = batches_in_job($job_dir, 'b');
+        fatal "no unprocessed batches in job $job_dir" if !@batches;
+        my $job = read_job($job_dir);
+        my $job_id = $job->{id};
         mkdir "$job/\@new" or fatal "mkdir $job/\@new";
         if ($symlink) {
             symlink $job, "$queue/$job_id"
