@@ -19,6 +19,9 @@ if ($prog eq 't0p') {
     $prog = 't0'.shift;
 }
 
+$ENV{'PATH'} = "$ENV{'PATH'}:/usr/sbin"
+    if $ENV{'PATH'} !~ m{(^|:)/usr/sbin(:|$)};
+
 my $root = $ENV{'T0P_ROOT'} ||= '/var/local/t0p';
 my ($drive, $tape, $device, $queue, $block_size, $verbose, $dryrun);
 my (%props);
