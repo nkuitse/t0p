@@ -1,0 +1,150 @@
+Summary
+-------
+
+t0p is a simple tape backup toolkit for archiving files to tape, maintaining an
+index of archives, labeling tapes, and so on.
+
+Files
+-----
+
+t0p depends on the existence of a number of files, rooted at `/var/local/t0p'
+(or some other location designated by $T0P_ROOT).  For example:
+
+    /var/local/t0p/
+    |-- drive/
+    |   |-- default -> tandberg-lto6-hh
+    |   `-- tandberg-lto6-hh/
+    |       |-- queue/
+    |       |   |-- 5e9916c8-c5ce-4bb0-a2fb-ccea03a5e3d6 \
+    |       |   |-- 83bd0760-d6df-48bb-a50d-a0bb03037177  +-- queued jobs
+    |       |   `-- a324ff47-b63f-4f92-8b4c-86b4c144aaca /
+    |       `-- tape -> ../../tape/T3                    ---- tape currently loaded
+    |-- job/
+    |   |-- 28970c2a-8eea-4060-8fc9-574e562fda12/        \
+    |   |-- 7a5ea04c-f6e5-41a3-895d-2ce6706aa1c6/         +-- unqueued jobs
+    |   |-- 9f90e336-bcaf-4bd0-8264-689331e79262/        /
+    |   |-- archive/                                     
+    |   |   |-- 18bfb8bb-b28d-48be-83ed-3ee88e5ffcc1/    \
+    |   |   `-- 440da1a2-b7c6-4130-b89d-292b9217e317/     +-- finished jobs
+    |   |   `-- a367ed01-7a76-4513-b460-4c7aada8be82/    /
+    |-- pool/
+    |   |-- any
+    |   |-- full
+    |   `-- incr
+    `-- tape
+        |-- T0/
+        |-- T1/
+        |-- T2/
+        `-- T3/
+            `-- label
+
+Batch file format
+---------------
+
+The batch file is divided into two or four sections, separated by blank lines.
+The `%batch' section includes some batch data such as its number (beginning
+with 0) within the job and the time (in Unix epoch seconds) at which it was
+added to the job:
+
+    %batch
+    number <batch number>
+    added <time>
+    comment <free text>
+    ...
+
+    %files
+    /path/to/file1
+    /path/to/file2
+    ...
+
+After the batch is written to tape, a `%summary' section is added that
+summarizes the results:
+
+    %summary
+    begin <time>
+    end <time>
+    tape <label>
+    filenum <number>
+    errors <error count>
+
+Per-file results are in a fourth section:
+
+    %results
+    ok <position> file | fail <errnum> file
+    ...
+
+In the `%batch' and `%summary' sections, each key-value line consists of a key
+followed by a single space and a (possibly empty) value.  For example:
+
+    %batch
+    number 0
+    added 1455999395
+    comment metadata and last data segment
+
+The `%files' section lists the files in the batch; if the job file specifies a
+root, they may be relative to that root; otherwise, they must be absolute
+paths.
+
+If no root is given, the manifest must contain absolute paths.  Otherwise, they
+may be specified in relative form (relative to the root).
+
+The batch file's name takes the form <status><number> where <status> is `b' (a
+batch that has not been completed), `w' (a batch that has been written to
+tape), or `r' (a batch that has been read from tape).  When a batch is
+completed, t0p renames the batch file accordingly.
+
+NOTE: Reading batches from tape is not yet supported.
+
+The `%receipt' section contains a sequence of key-value lines followed without interupption by 
+A receipt file contains zero or more receipts, separated by a blank line.  Each
+receipt has the following general form:
+
+    batch <batch ID>
+    begin <time at which the batch began>
+    end <time at which the batch ended>
+    errors <error count>
+    filenum <file number on tape>
+    ok <position> <file path> | fail <file path>
+    ok <position> <file path> | fail <file path>
+    ...
+
+The various lines in a receipt may appear in any order.
+
+Lines beginning `ok' or `fail' indicate the result of each file within the
+batch.  For each file successfully written, the position of the file within the
+cpio archive is also given.  No error messages or codes are given.
+
+Tape labels
+-----------
+
+Labels are read, written, and verified using t0label.  Other t0p scripts ignore
+tape labels altogether, except t0ck which reports any label that it finds.
+
+To ensure that the tape in the drive is the one you need, use t0label:
+
+    t0label -k $LABEL || fatal 'Wrong tape, or no tape in drive'
+
+The label as written to tape occupies the first 32,678 bytes of the tape; this
+is followed by an EOF mark.
+
+The data in the label consists of several fields, including the label string
+itself.  Each field takes the form of a key:value pair on a separate line.  The
+first two fields must be as follows:
+
+    t0version:1
+    label:<any string of bytes excluding \n and \0>
+
+Additional fields may follow, using the same format.  The block must be padded
+with null bytes to a total size of 32,768 bytes.
+
+If you have a tape with cpio files that you want to use without (re)labeling,
+perhaps because it was labeled using another program, you can still check the
+tape's label, because t0label will calculate the SHA-256 hash of the first
+32,768-byte block on the tape and you can use that:
+
+    LABELHASH=$(t0label -r -h)
+    [...time passes...]
+    t0label -k -h $LABELHASH || fatal 'Wrong tape, or no tape in drive'
+
+This method will only work if the first file on the tape is at least 32,768
+bytes long AND those bytes are never rewritten.
