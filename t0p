@@ -324,7 +324,7 @@ sub write_job {
     open my $fh, '>', "$job_file"
         or fatal "create $job_file: $!";
     printf $fh <<'EOS', $id;
-%job
+%%job
 id %s
 EOS
     foreach (sort keys %job) {
