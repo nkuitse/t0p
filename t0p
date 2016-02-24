@@ -139,11 +139,15 @@ sub prog_job {
         print $fh "batch $batch added $t0 count $num size $size\n";
         undef $fh;
         open $fh, '>', "$job/b$batch" or fatal "create $job/b$batch: $!";
-        print $fh "\%batch\nnumber $batch\ncreated $t0\nsize $size\ncount $num\n";
-        foreach (sort keys %prop) {
-            print $fh $_, ' ', $prop{$_}, "\n";
-        }
-        print $fh "\n\%files\n";
+        print $fh <<"EOS";
+%batch
+number $batch
+created $t0
+size $size
+count $num
+EOS
+        print $fh $_, ' ', $prop{$_}, "\n" for sort keys %prop;
+        print $fh "\n%files\n";
         print $fh $_, "\n" for @files;
         print $fh "\n";
         close $fh;
@@ -323,14 +327,12 @@ sub write_job {
     my $id = delete $job{id};
     open my $fh, '>', "$job_file"
         or fatal "create $job_file: $!";
-    printf $fh <<'EOS', $id;
-%%job
-id %s
+    print $fh <<"EOS";
+%job
+id $id
 EOS
-    foreach (sort keys %job) {
-        print $fh $_, ' ', $job{$_}, "\n";
-    }
-    print $fh "\n\%log\n";
+    print $fh $_, ' ', $job{$_}, "\n" for sort keys %job;
+    print $fh "\n%log\n";
     close $fh;
 }
 
@@ -474,17 +476,20 @@ sub process_batches {
     }
     foreach my $batch_file (@batches) {
         (my $written_file = $batch_file) =~ s{(^|/)b([0-9]+)$}{$1w$2};
+        (my $writing_file = $batch_file) =~ s{(^|/)b([0-9]+)$}{$1\@$2};
         my $batch = read_batch($batch_file);
+        rename $batch_file, $writing_file or fatal "rename $batch_file to $writing_file: $!";
         process_batch($job, $batch);
         $batch->{tape} = $label{label} // "hash=$label{hash}";
-        my $receipt = make_receipt($batch);
+        my @results = make_results($batch);
         if ($dryrun) {
-            print $receipt, "\n";
+            print $_, "\n" for @results;
             next;
         }
         open my $fh, '>>', $batch_file or fatal "open $batch_file: $!";
-        print $fh "\%receipt\n", $receipt, "\n";
-        rename $batch_file, $written_file or fatal "rename $batch_file to $written_file: $!";
+        print $fh "%results\n";
+        print $fh $_, "\n" for @results;
+        rename $writing_file, $written_file or fatal "rename $writing_file to $written_file: $!";
         if ($verbose) {
             $tape //= '[unknown]';
             print STDERR "batch $batch->{batch} written to tape $tape at filenum $batch->{filenum}\n";
@@ -520,7 +525,7 @@ sub process_batch {
     my ($job, $batch) = @_;
     my $batch_id = $batch->{batch};
     my @files = @{ $batch->{files} };
-    my %result = map { $_ => 'fail' } @files;
+    my %result = map { $_ => 'fail 1' } @files;
     @$batch{qw(begin filenum errors files results)} = ( time, $status{filenum}, 0, \@files, \%result );
     my $dir = $batch->{root} // $job->{root};
     if (defined $dir) {
@@ -559,20 +564,20 @@ sub process_batch {
     $batch->{end} = time;
 }
 
-sub make_receipt {
+sub make_results {
     my ($batch) = @_;
     my @files = @{ delete $batch->{files} };
     my %result = %{ delete $batch->{results} };
     my %batch = %$batch;
-    my @receipt;
+    my @results;
     foreach (sort keys %batch) {
-        push @receipt, "$_ $batch{$_}";
+        push @results, "$_ $batch{$_}";
     }
     foreach (@files) {
         my $result = $result{$_};
-        push @receipt, "$result $_";
+        push @results, "$result $_";
     }
-    return join("\n", @receipt) . "\n";
+    return @results;
 }
 
 sub jobs_not_in_queue {
