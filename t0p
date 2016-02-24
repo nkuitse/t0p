@@ -66,8 +66,8 @@ sub prog_queue {
         }
         $job = "$root/job/$job" if $job !~ m{^/};
         fatal "no such directory: $job" if !-d $job;
-        my @batches = batches_in_job($job, 'b');
-        fatal "no unprocessed batches in job $job" if !@batches;
+        my @batch_names = batches_in_job($job, 'b');
+        fatal "no unprocessed batches in job $job" if !@batch_names;
         my $job_id = uuid();
         mkdir "$job/\@new" or fatal "mkdir $job/\@new";
         if ($symlink) {
@@ -147,9 +147,7 @@ size $size
 count $num
 EOS
         print $fh $_, ' ', $prop{$_}, "\n" for sort keys %prop;
-        print $fh "\n%files\n";
-        print $fh $_, "\n" for @files;
-        print $fh "\n";
+        print $fh $_, "\n" for '', '%files', @files, '';
         close $fh;
     }
     elsif ($list) {
@@ -259,11 +257,11 @@ sub prog_write {
         @job_dirs = map { "$queue/$_" } @ARGV;
     }
     foreach my $job_dir (@job_dirs) {
-        my @batches = batches_in_job($job_dir, 'b');
-        next if !@batches;
+        my @batch_names = batches_in_job($job_dir, 'b');
+        next if !@batch_names;
         read_label() if !%label && !$dryrun;
         my $job = read_job("$job_dir/job");
-        process_batches($job, @batches);
+        my @receipt = process_batches($job, @batch_names);
         my $job_name = dirname($job_dir);
         rename $job_dir, "$root/job/archive/$job_name" or fatal "rename $job_dir $root/archive/$job_name: $!";
     }
@@ -308,7 +306,7 @@ EOS
 sub read_job {
     my ($job_file) = @_;
     open my $fh, '<', $job_file or die "open $job_file: $!";
-    my %job;
+    my %job = { file => $job_file, dir => dirname($job_file) };
 LOOP:
     while (<$fh>) {
         if (/^%job$/) {
@@ -464,7 +462,7 @@ sub read_manifest {
 }
 
 sub process_batches {
-    my ($job, @batches) = @_;
+    my ($job, @batch_names) = @_;
     get_status();
     if (!$dryrun) {
         $status{online} or fatal "no tape\n";
@@ -474,11 +472,12 @@ sub process_batches {
         $job->{drive} = basename($drive);
         $job->{device} = $device;
     }
-    foreach my $batch_file (@batches) {
-        (my $written_file = $batch_file) =~ s{(^|/)b([0-9]+)$}{$1w$2};
-        (my $writing_file = $batch_file) =~ s{(^|/)b([0-9]+)$}{$1\@$2};
-        my $batch = read_batch($batch_file);
-        rename $batch_file, $writing_file or fatal "rename $batch_file to $writing_file: $!";
+    my @receipt;
+    foreach my $batch_name (@batch_names) {
+        (my $written_name = $batch_name) =~ s{^b([0-9]+)$}{$1w$2};
+        (my $writing_name = $batch_name) =~ s{^b([0-9]+)$}{$1\@$2};
+        my $batch = read_batch("$job/$batch_name");
+        rename $batch_name, $writing_name or fatal "rename $batch_name to $writing_name: $!";
         process_batch($job, $batch);
         $batch->{tape} = $label{label} // "hash=$label{hash}";
         my @results = make_results($batch);
@@ -486,15 +485,16 @@ sub process_batches {
             print $_, "\n" for @results;
             next;
         }
-        open my $fh, '>>', $batch_file or fatal "open $batch_file: $!";
-        print $fh "%results\n";
-        print $fh $_, "\n" for @results;
-        rename $writing_file, $written_file or fatal "rename $writing_file to $written_file: $!";
+        open my $fh, '>>', $batch_name or fatal "open $batch_name: $!";
+        print $fh $_, "\n" for '%results', @results, '';
+        rename $writing_name, $written_name or fatal "rename $writing_name to $written_name: $!";
+        push @receipt, "batch $batch->{batch} tape $tape filenum $batch->{filenum}";
         if ($verbose) {
             $tape //= '[unknown]';
             print STDERR "batch $batch->{batch} written to tape $tape at filenum $batch->{filenum}\n";
         }
     }
+    return @receipt;
 }
 
 sub read_batch {
@@ -610,7 +610,7 @@ sub batches_in_job {
     my %batch;
     foreach (glob("$job/*")) {
         next if !m{.+/([bwr])([0-9]+)$};
-        $batch{$_} = $1 if $want{$1};
+        $batch{$1.$2} = $1 if $want{$1};
     }
     return wantarray ? keys %batch : \%batch;
 }
