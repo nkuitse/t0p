@@ -502,14 +502,14 @@ sub procwbatches {
     my $jfile = "$jdir/wjob";
     my %tapes;
     # cd job root
-    my $pwd = cwd;
+    my $cwd = cwd;
     my $dir = $job->{root} // '/';
     $dir =~ m{^/} or fatal "relative job root: $dir";
     xchdir $dir;
     foreach my $b (@b) {
         procwbatch($job, $logfh, "$jdir/$b");
     }
-    xchdir $pwd;
+    xchdir $cwd;
 }
 
 sub unique {
@@ -557,10 +557,16 @@ sub procwbatch {
     my $batch = read_batch($bfile);
     my $n = $batch->{number};
     my ($afile, $wfile) = map { "$jdir/$_$n" } qw(@ w);
-    my @files = @{ $batch->{files} };
 
     # Rename bn ---> @n
-    xrename $bfile, $afile if !$dryrun;
+    my @files = @{ $batch->{files} };
+    if ($dryrun) {
+        unshift @files, $bfile;
+    }
+    else {
+        xrename $bfile, $afile;
+        unshift @files, $afile;
+    }
     printf $logfh "B %d begin %d files %d\n", $n, time, scalar(@files);
 
     # Build the manifest
