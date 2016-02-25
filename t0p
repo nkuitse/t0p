@@ -558,18 +558,18 @@ sub procwbatch {
     my $n = $batch->{number};
     my ($afile, $wfile) = map { "$jdir/$_$n" } qw(@ w);
 
-    # Rename bn ---> @n
-    my @files = @{ $batch->{files} };
+    # Build the manifest
+    my @files = ("$jdir/wjob");
     if ($dryrun) {
-        unshift @files, $bfile;
+        push @files, $bfile;
     }
     else {
+        # Rename bn ---> @n
         xrename $bfile, $afile;
-        unshift @files, $afile;
+        push @files, $afile;
     }
+    push @files, @{ $batch->{files} };
     printf $logfh "B %d begin %d files %d\n", $n, time, scalar(@files);
-
-    # Build the manifest
     my $manifest = mktmp(manifest => @files);
 
     # Write the archive
