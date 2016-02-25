@@ -4,6 +4,7 @@ use strict;
 use warnings;
 
 use Digest;
+use Cwd;
 use File::Basename qw(basename dirname);
 use Getopt::Long
     qw(:config posix_default gnu_compat bundling no_ignore_case);
@@ -12,6 +13,11 @@ use constant T0VERSION => 1;
 
 sub usage;
 sub fatal;
+
+sub xopen;
+sub xrename;
+sub xmkdir;
+sub xchdir;
 
 my $prog = basename($0);
 if ($prog eq 't0p') {
@@ -59,25 +65,13 @@ sub prog_queue {
     }
     elsif ($add) {
         usage '-a [-q QUEUE] [-s] JOB' if !@ARGV;
-        my $job_dir = shift @ARGV;
-        if ($symlink) {
-            fatal "job symlinks must be absolute: $job_dir"
-                if $job_dir !~ m{^/};
-        }
-        $job = "$root/job/$job" if $job !~ m{^/};
-        fatal "no such directory: $job" if !-d $job;
-        my @batch_names = batches_in_job($job, 'b');
-        fatal "no unprocessed batches in job $job" if !@batch_names;
-        my $job_id = uuid();
-        mkdir "$job/\@new" or fatal "mkdir $job/\@new";
-        if ($symlink) {
-            symlink $job, "$queue/$job_id"
-                or fatal "symlink $queue/$job_id: $!";
-        }
-        else {
-            rename $job, "$queue/$job_id"
-                or fatal "symlink $queue/$job_id: $!";
-        }
+        my $j = shift @ARGV;
+        my $jdir = jdir($j);
+        fatal "no such job: $j" if !-d $jdir;
+        my @b = batches_in_job($jdir, 'b');
+        fatal "no unprocessed batches in job $j" if !@b;
+        xmkdir "$jdir/\@ready";
+        xrename $jdir, "$queue/$j";
     }
     elsif ($create) {
         usage '-c -q QUEUE' if !@ARGV;
@@ -85,13 +79,17 @@ sub prog_queue {
     }
 }
 
+sub jdir { "$root/job/" . shift }
+
 sub prog_job {
     my ($add, $create, $list, %prop);
+    my $type = 'w';
     GetOptions(
         @common_options,
         'a' => \$add,
         'c' => \$create,
         'l' => \$list,
+        'r' => sub { $type = 'r' },
         'p=s' => sub {
             usage if $_[1] !~ /^([^=]+)=(.*)$/;
             $prop{$1} = $2;
@@ -100,55 +98,53 @@ sub prog_job {
     init_defaults();
     if ($create) {
         # Create a new job
-        usage if @ARGV > 1;
-        my $uuid = uuid();
-        my $job = "$root/job/$uuid";
-        if (@ARGV) {
-            my ($dir) = @ARGV;
-            $dir =~ m{^/} or usage;
-            symlink $dir, $job or fatal "symlink $dir $job: $!";
-        }
-        else {
-            mkdir $job or fatal "mkdir $job: $!";
-        }
-        fatal "create $job/job: file already exists" if -e "$job/job";
-        write_job("$job/job", {
-            id => $uuid,
+        usage if @ARGV;
+        my $j = uuid();
+        my $jdir = "$root/job/$j";
+        xmkdir $jdir;
+        my $jfile = "$jdir/${type}job";
+        write_job($jfile, {
+            job => $j,
             created => time,
+            type => $type,
             %prop,
         });
-        print $uuid, "\n";
+        print $j, "\n";
     }
     elsif ($add) {
         # Add a batch of files to an existing job
-        usage 't0job -a JOBDIR [-p PROP=VALUE]... < MANIFEST' if !@ARGV;
-        my $job = shift @ARGV;
-        $job = "$root/job/$job" if $job !~ m{^/};
+        usage 't0job -a [-p PROP=VALUE]... JOBDIR [FILE... | < MANIFEST]' if !@ARGV;
+        my $jdir = shift @ARGV;
+        $jdir = "$root/job/$jdir" if $jdir !~ m{^/};
+        my $j = basename($jdir);
         my @files = @ARGV ? @ARGV : <STDIN>;
-        fatal 'no files to append to job' if !@files;
+        fatal "no files to append to job $j" if !@files;
         chomp @files;
         my $batch = 0;
-        open my $fh, '+>>', "$job/job" or fatal "open $job/job: $!";
-        seek $fh, 0, 0 or fatal "seek $job/job: $!";
-        while (<$fh>) {
-            $batch = $1 + 1 if /^batch ([0-9]+) added/ && $1 >= $batch;
+        my $jfile = "$jdir/${type}job";
+        my $jfh = xopen('+>>', $jfile);
+        seek $jfh, 0, 0 or fatal "seek $jfile: $!";
+        while (<$jfh>) {
+            next if !/^%batches$/;
+            while (<$jfh>) {
+                $batch = $1 + 1 if /^([0-9]+) / && $1 >= $batch;
+            }
+            last;
         }
         my $t0 = time;
         my $num = scalar @files;
         my $size = size_total(@files);
-        print $fh "batch $batch added $t0 count $num size $size\n";
-        undef $fh;
-        open $fh, '>', "$job/b$batch" or fatal "create $job/b$batch: $!";
-        print $fh <<"EOS";
+        print $jfh "$batch count $num size $size\n";
+        my $bfh = xopen '>', "$jdir/b$batch";
+        print $bfh <<"EOS";
 %batch
 number $batch
 created $t0
 size $size
 count $num
 EOS
-        print $fh $_, ' ', $prop{$_}, "\n" for sort keys %prop;
-        print $fh $_, "\n" for '', '%files', @files, '';
-        close $fh;
+        print $bfh $_, ' ', $prop{$_}, "\n" for sort keys %prop;
+        print $bfh $_, "\n" for '', '%files', @files, '';
     }
     elsif ($list) {
         print "Q $_\n" for jobs_in_queue();
@@ -237,6 +233,27 @@ sub prog_label {
     }
 }
 
+sub xopen {
+    my ($mode, $file) = @_;
+    open my $fh, $mode, $file or fatal "open $mode $file: $!";
+    return $fh;
+}
+
+sub xrename {
+    rename $_[0], $_[1] or fatal "rename $_[0] $_[1]: $!";
+}
+
+sub xmkdir {
+    foreach (@_) {
+        mkdir $_ or fatal "mkdir: $_";
+    }
+}
+
+sub xchdir {
+    my ($dir) = @_;
+    chdir $dir or fatal "chdir $dir: $!";
+}
+
 sub prog_write {
     # usage: t0write [ -a | JOB BATCH... ]
     my ($all);
@@ -256,15 +273,23 @@ sub prog_write {
         usage 'write [ -a | JOB BATCH... ]' if @ARGV < 1;
         @job_dirs = map { "$queue/$_" } @ARGV;
     }
-    foreach my $job_dir (@job_dirs) {
-        my @batch_names = batches_in_job($job_dir, 'b');
-        next if !@batch_names;
-        read_label() if !%label && !$dryrun;
-        my $job = read_job("$job_dir/job");
-        my @receipt = process_batches($job, @batch_names);
-        my $job_name = dirname($job_dir);
-        rename $job_dir, "$root/job/archive/$job_name" or fatal "rename $job_dir $root/archive/$job_name: $!";
+    xrename "$drive/\@idle", "$drive/\@busy" if !$dryrun;
+    foreach my $jdir (@job_dirs) {
+        my $j = basename($jdir);
+        my @b = batches_in_job($jdir, 'b');
+        next if !@b;
+        my $job = read_job("$jdir/wjob");
+        if (!$dryrun) {
+            xrename "$jdir/\@ready", "$jdir/\@busy";
+            read_label() if !%label;
+        }
+        procwbatches($job, @b);
+        if (!$dryrun) {
+            xrename "$jdir/\@busy", "$jdir/\@done";
+            xrename $jdir, "$root/job/archive/$j";
+        }
     }
+    xrename "$drive/\@busy", "$drive/\@idle" if !$dryrun;
 }
 
 sub prog_stat {
@@ -304,13 +329,13 @@ EOS
 # --- Functions
 
 sub read_job {
-    my ($job_file) = @_;
-    open my $fh, '<', $job_file or die "open $job_file: $!";
-    my %job = { file => $job_file, dir => dirname($job_file) };
+    my ($jfile) = @_;
+    my $jfh = xopen '<', $jfile;
+    my %job = ( file => $jfile, dir => dirname($jfile) );
 LOOP:
-    while (<$fh>) {
+    while (<$jfh>) {
         if (/^%job$/) {
-            while (<$fh>) {
+            while (<$jfh>) {
                 last LOOP if /^$/;
                 $job{$1} = $2 if /^(\S+) (.*)/;
             }
@@ -320,18 +345,17 @@ LOOP:
 }
 
 sub write_job {
-    my ($job_file, $job) = @_;
+    my ($jfile, $job) = @_;
     my %job = %$job;
-    my $id = delete $job{id};
-    open my $fh, '>', "$job_file"
-        or fatal "create $job_file: $!";
-    print $fh <<"EOS";
+    my $j = delete $job{job};
+    my $jfh = xopen '>', $jfile;
+    print $jfh <<"EOS";
 %job
-id $id
+job $j
 EOS
-    print $fh $_, ' ', $job{$_}, "\n" for sort keys %job;
-    print $fh "\n%log\n";
-    close $fh;
+    print $jfh $_, ' ', $job{$_}, "\n" for sort keys %job;
+    print $jfh "\n%batches\n";
+    close $jfh;
 }
 
 sub size_total {
@@ -405,7 +429,7 @@ sub get_status {
 
 sub read_label {
     mt('rewind') or fatal "mt rewind: $!";
-    open my $fh, '<', $device or fatal "open: $!";
+    my $fh = xopen '<', $device;
     my $read = read($fh, my $buf, $block_size)
         or fatal "read label: $!";
     close $fh;
@@ -427,7 +451,7 @@ sub write_label {
     my $fh;
     if (!$dryrun) {
         mt('rewind') or fatal "rewind: $!";
-        open $fh, '>', $device or fatal "open: $!";
+        $fh = xopen '>', $device;
     }
     my $buf = "\x00" x $block_size;
     my $str = sprintf("t0version:%d\nlabel:%s\ncreated:%s\n", T0VERSION, $label, time);
@@ -444,7 +468,7 @@ sub write_label {
     }
     else {
         syswrite($fh, $buf) or fatal "write: $!";
-        close $fh or fatal "close: $!";
+        xclose $fh;
         mt('weof') or fatal "weof: $!";
         return if !$verbose;
         print STDERR "label written: $label (hash $hash)\n";
@@ -454,54 +478,62 @@ sub write_label {
 sub read_manifest {
     my ($f) = @_;
     fatal "empty manifest: $f" if !-s $f;
-    open my $fh, '<', $f or fatal "open manifest $f: $!";
+    my $fh = xopen '<', $f;
     my @files = <$fh>;
     fatal "read manifest: $f" if !@files;
     chomp @files;
     return @files;
 }
 
-sub process_batches {
-    my ($job, @batch_names) = @_;
+sub procwbatches {
+    my ($job, @b) = @_;
+    my $j = $job->{job};
     get_status();
     if (!$dryrun) {
         $status{online} or fatal "no tape\n";
-        mt('eod') if !$dryrun;
+        mt('eod');
         get_status();
         $status{eod} or fatal "not EOD\n";
         $job->{drive} = basename($drive);
         $job->{device} = $device;
     }
-    my @receipt;
-    foreach my $batch_name (@batch_names) {
-        (my $written_name = $batch_name) =~ s{^b([0-9]+)$}{$1w$2};
-        (my $writing_name = $batch_name) =~ s{^b([0-9]+)$}{$1\@$2};
-        my $batch = read_batch("$job/$batch_name");
-        rename $batch_name, $writing_name or fatal "rename $batch_name to $writing_name: $!";
-        process_batch($job, $batch);
-        $batch->{tape} = $label{label} // "hash=$label{hash}";
-        my @results = make_results($batch);
-        if ($dryrun) {
-            print $_, "\n" for @results;
-            next;
-        }
-        open my $fh, '>>', $batch_name or fatal "open $batch_name: $!";
-        print $fh $_, "\n" for '%results', @results, '';
-        rename $writing_name, $written_name or fatal "rename $writing_name to $written_name: $!";
-        push @receipt, "batch $batch->{batch} tape $tape filenum $batch->{filenum}";
-        if ($verbose) {
-            $tape //= '[unknown]';
-            print STDERR "batch $batch->{batch} written to tape $tape at filenum $batch->{filenum}\n";
-        }
+    my $jdir = $job->{dir};
+    my $logfh = $dryrun ? \*STDERR : xopen '>>', "$jdir/log";
+    my $jfile = "$jdir/wjob";
+    my %tapes;
+    # cd job root
+    my $pwd = cwd;
+    my $dir = $job->{root} // '/';
+    $dir =~ m{^/} or fatal "relative job root: $dir";
+    xchdir $dir;
+    foreach my $b (@b) {
+        procwbatch($job, $logfh, "$jdir/$b");
     }
-    return @receipt;
+    xchdir $pwd;
+}
+
+sub unique {
+    my (%seen, @unique);
+    foreach (@_) {
+        push @unique, $_ if !$seen{$_}++;
+    }
+    return @unique;
 }
 
 sub read_batch {
     my ($f) = @_;
-    my (%batch, @files);
-    open my $fh, '<', $f or fatal "open $f: $!";
-    while (<$fh>) {
+    my $b = basename($f);
+    my @files;
+    my %batch = (
+        batch => $b,
+        number => substr($b, 1),
+        tape => '?',
+        filenum => '?',
+        errors => 0,
+        files => \@files,
+    );
+    my $bfh = xopen '<', $f;
+    while (<$bfh>) {
         next if /^%batch$/;
         last if /^$/;
         next if /^\s*(?:#.*)?$/;
@@ -509,80 +541,71 @@ sub read_batch {
             if !/^(\S+) (.*)$/;
         $batch{$1} = $2;
     }
-    while (<$fh>) {
+    while (<$bfh>) {
         next if /^%files$/;
         last if /^$/;
         chomp;
         push @files, $_;
     }
-    $batch{files} = \@files;
     $batch{tape} = $tape if defined $tape;
-    $batch{batch} //= $f;
     return \%batch;
 }
 
-sub process_batch {
-    my ($job, $batch) = @_;
-    my $batch_id = $batch->{batch};
+sub procwbatch {
+    my ($job, $logfh, $bfile) = @_;
+    my $jdir = dirname($bfile);
+    my $batch = read_batch($bfile);
+    my $n = $batch->{number};
+    my ($afile, $wfile) = map { "$jdir/$_$n" } qw(@ w);
     my @files = @{ $batch->{files} };
-    my %result = map { $_ => 'fail 1' } @files;
-    @$batch{qw(begin filenum errors files results)} = ( time, $status{filenum}, 0, \@files, \%result );
-    my $dir = $batch->{root} // $job->{root};
-    if (defined $dir) {
-        $dir =~ m{^/} or fatal "relative batch root: $dir";
-        chdir $dir or fatal "chdir $dir: $!";
-    }
-    else {
-        chdir '/' or fatal "chdir /: $!";
-    }
+
+    # Rename bn ---> @n
+    xrename $bfile, $afile if !$dryrun;
+    printf $logfh "B %d begin %d files %d\n", $n, time, scalar(@files);
+
+    # Build the manifest
+    my $manifest = mktmp(manifest => @files);
+
     # Write the archive
-    my $manifest = qx{mktemp -t t0p.$$.manifest.XXXXXX};
-    chomp $manifest;
-    open my $fh, '>', $manifest or die;
-    print $fh $_, "\n" for @files;
-    close $fh;
+    get_status();
+    my %fail = map { $_ => 1 } @files;
+    printf $logfh "T %s filenum %d\n", $tape // '?', $status{filenum};
     open my $fhafio, "afio -o -A -b $block_size -v -B $device < $manifest 2>&1 |"
         or fatal "exec afio: $!";
-    push @tmp, $manifest;
     while (<$fhafio>) {
         if (/^([0-9]+) (.+) -- okay$/) {
-            $result{$2} = "ok $1";
+            printf $logfh "F %d %s\n", $1, $2;
+            delete $fail{$2};
         }
         else {
-            $batch->{errors}++;
+            print $logfh '* ', $_;
         }
     }
     unlink $manifest;
     close $fhafio or fatal "afio: $!";
-    if ($dryrun) {
-        $status{filenum}++;
-    }
-    else {
-        get_status();
-        $status{eod} or fatal "not EOD after write";
-    }
-    $batch->{end} = time;
+
+    # Log any failed files
+    print $logfh "E $_\n" for sort keys %fail;
+
+    # Rename @n ---> wn
+    xrename $afile, $wfile if !$dryrun;
+    printf $logfh "B %d end %d errors %d\n", $n, time, scalar keys %fail;
 }
 
-sub make_results {
-    my ($batch) = @_;
-    my @files = @{ delete $batch->{files} };
-    my %result = %{ delete $batch->{results} };
-    my %batch = %$batch;
-    my @results;
-    foreach (sort keys %batch) {
-        push @results, "$_ $batch{$_}";
-    }
-    foreach (@files) {
-        my $result = $result{$_};
-        push @results, "$result $_";
-    }
-    return @results;
+sub mktmp {
+    my $type = shift;
+    my $f = qx{mktemp -t t0p.$$.$type.XXXXXX};
+    chomp $f;
+    my $fh = xopen '>', $f;
+    print $fh $_, "\n" for @_;
+    close $fh;
+    push @tmp, $f;
+    return $f;
 }
 
 sub jobs_not_in_queue {
     my @jobs;
-    foreach (glob("$root/job/*/job")) {
+    foreach (glob("$root/job/*/?job")) {
         my @parts = split '/';
         pop @parts;
         my $job = pop @parts;
