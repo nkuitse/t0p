@@ -7,6 +7,7 @@ use Digest;
 use Cwd;
 use File::Basename qw(basename dirname);
 use File::Copy qw(move copy);
+use POSIX qw(strftime);
 use Getopt::Long
     qw(:config posix_default gnu_compat bundling no_ignore_case);
 
@@ -80,8 +81,6 @@ sub prog_queue {
         fatal 'not yet implemented: -c';
     }
 }
-
-sub jdir { "$root/job/" . shift }
 
 sub prog_job {
     my ($add, $create, $list, %prop);
@@ -235,31 +234,6 @@ sub prog_label {
     }
 }
 
-sub xopen {
-    my ($mode, $file) = @_;
-    open my $fh, $mode, $file or fatal "open $mode $file: $!";
-    return $fh;
-}
-
-sub xmkdir {
-    foreach (@_) {
-        mkdir $_ or fatal "mkdir: $_";
-    }
-}
-
-sub xchdir {
-    my ($dir) = @_;
-    chdir $dir or fatal "chdir $dir: $!";
-}
-
-sub xmove {
-    move($_[0], $_[1]) or fatal "move $_[0] $_[1]: $!";
-}
-
-sub xcopy {
-    copy($_[0], $_[1]) or fatal "copy $_[0] $_[1]: $!";
-}
-
 sub prog_write {
     # usage: t0write [-y FILE] [ -a | JOB BATCH... ]
     my ($all, $receipt);
@@ -294,7 +268,12 @@ sub prog_write {
         if (!$dryrun) {
             xmove "$jdir/\@busy", "$jdir/\@done";
             xmove $jdir, "$root/job/archive/$j";
-            xcopy "$jdir/log", $receipt if defined $receipt;
+            if (defined $receipt) {
+                my $rcptfh = xopen '>>', $receipt;
+                xcopy("$jdir/wjob", $rcptfh);
+                print $rcptfh "\n%log\n";
+                xcopy("$jdir/log", $rcptfh);
+            }
         }
     }
     xmove "$drive/\@busy", "$drive/\@idle" if !$dryrun;
@@ -307,9 +286,9 @@ sub prog_stat {
     ) or usage;
     init_defaults();
     get_status();
-    printf <<'EOS', $drive, readlink($device);
-drive        : %s
-device       : %s
+    printf <<'EOS', basename($drive), readlink($device);
+drive         : %s
+device        : %s
 EOS
     if ($status{online}) {
         my @flags;
@@ -317,24 +296,71 @@ EOS
             push @flags, $_ if $status{$_};
         }
         @flags = ('--') if !@flags;
-        printf <<'EOS', @status{qw(filenum partition blocksize blocknum)}, join(',',@flags);
-online       : yes
-file number  : %d
-partition    : %d
-block size   : %d
-block number : %d
-flags        : %s
+        printf <<'EOS', @status{qw(blocksize filenum blocknum position)}, join(',',@flags);
+online        : yes
+block size    : %d
+file number   : %d
+block in file : %d
+block on tape : %d
+flags         : %s
 EOS
     }
     else {
         printf <<'EOS', @status{qw(blocksize)};
-online       : no
-block size   : %d
+online        : no
+block size    : %d
 EOS
     }
 }
 
+sub prog_scan {
+    init_defaults();
+    printf "%7.7s  %4.4s  %-10.10s  %s\n", qw(Filenum Type Date Description);
+    read_label();
+    printf "%7d  %4.4s  %-10.10s  Tape %s label: hash=%s\n", 0, 'L', $label{created} ? strftime('%Y-%m-%d', localtime $label{created}) : '?', $label{label} // '?', $label{hash};
+    get_status();
+    while (1) {
+        mt('fsf'), get_status() if $status{blocknum} != 0;
+        my @output = qx{afio -t -A -b $block_size -v -B $device 2> /dev/null};
+        last if $?;
+        print("EOF\n"), next if !@output;
+        chomp @output;
+        my $first = shift @output;
+        printf "%7d  %4.4s  %-10.10s  %s\n", $status{filenum}, '?', '?', $first;
+        get_status();
+    }
+    get_status();
+    print "EOD\n" if $status{eod};
+}
+
 # --- Functions
+
+sub jdir { "$root/job/" . shift }
+
+sub xopen {
+    my ($mode, $file) = @_;
+    open my $fh, $mode, $file or fatal "open $mode $file: $!";
+    return $fh;
+}
+
+sub xmkdir {
+    foreach (@_) {
+        mkdir $_ or fatal "mkdir: $_";
+    }
+}
+
+sub xchdir {
+    my ($dir) = @_;
+    chdir $dir or fatal "chdir $dir: $!";
+}
+
+sub xmove {
+    move($_[0], $_[1]) or fatal "move $_[0] $_[1]: $!";
+}
+
+sub xcopy {
+    copy($_[0], $_[1]) or fatal "copy $_[0] $_[1]: $!";
+}
 
 sub read_job {
     my ($jfile) = @_;
@@ -513,11 +539,13 @@ sub procwbatches {
     my $cwd = cwd;
     my $dir = $job->{root} // '/';
     $dir =~ m{^/} or fatal "relative job root: $dir";
+    printf $logfh "J %s begin %d\n", $j, time;
     xchdir $dir;
     foreach my $b (@b) {
         procwbatch($job, $logfh, "$jdir/$b");
     }
     xchdir $cwd;
+    printf $logfh "J %s end %d\n", $j, time;
 }
 
 sub unique {
