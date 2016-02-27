@@ -51,13 +51,12 @@ my @common_options = (
 # Subprograms
 
 sub prog_queue {
-    my ($add, $create, $list, $symlink);
+    my ($add, $create, $list);
     GetOptions(
         @common_options,
         'a' => \$add,
         'c' => \$create,
         'l' => \$list,
-        's' => \$symlink,
     ) or usage;
     init_defaults();
     $list = 1 if !$add && !$create;
@@ -74,7 +73,7 @@ sub prog_queue {
         my @b = batches_in_job($jdir, 'b');
         fatal "no unprocessed batches in job $j" if !@b;
         xmkdir "$jdir/\@ready";
-        xmove $jdir, "$queue/$j";
+        xsymlink $jdir, "$queue/$j";
     }
     elsif ($create) {
         usage '-c -q QUEUE' if !@ARGV;
@@ -255,7 +254,8 @@ sub prog_write {
         @job_dirs = map { "$queue/$_" } @ARGV;
     }
     xmove "$drive/\@idle", "$drive/\@busy" if !$dryrun;
-    foreach my $jdir (@job_dirs) {
+    foreach my $jlink (@job_dirs) {
+        my $jdir = readlink $jlink;
         my $j = basename($jdir);
         my @b = batches_in_job($jdir, 'b');
         next if !@b;
@@ -267,7 +267,7 @@ sub prog_write {
         procwbatches($job, @b);
         if (!$dryrun) {
             xmove "$jdir/\@busy", "$jdir/\@done";
-            xmove $jdir, "$root/job/archive/$j";
+            xunlink $jlink;
             if (defined $receipt) {
                 xcat(xopen('<', "$jdir/wjob"), "\n%log\n", xopen('<', "$jdir/log"), '>', $receipt);
             }
@@ -375,6 +375,14 @@ sub xmove {
 
 sub xcopy {
     copy($_[0], $_[1]) or fatal "copy $_[0] $_[1]: $!";
+}
+
+sub xsymlink {
+    symlink $_[0], $_[1] or fatal "symlink @_: $!";
+}
+
+sub xunlink {
+    unlink $_[0] or fatal "unlink @_: $!";
 }
 
 sub read_job {
