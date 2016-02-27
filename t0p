@@ -644,7 +644,7 @@ sub procwbatch {
     my ($afile, $wfile) = map { "$jdir/$_$n" } qw(@ w);
 
     # Build the manifest
-    my @files = ("$jdir/wjob");
+    my @files;
     if ($dryrun) {
         push @files, $bfile;
     }
@@ -653,7 +653,7 @@ sub procwbatch {
         xmove $bfile, $afile;
         push @files, $afile;
     }
-    push @files, @{ $batch->{files} };
+    push @files, "$jdir/wjob", @{ $batch->{files} };
     printf $logfh "B %d begin %d files %d\n", $n, time, scalar(@files);
     my $manifest = mktmp(manifest => @files);
 
