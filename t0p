@@ -269,10 +269,7 @@ sub prog_write {
             xmove "$jdir/\@busy", "$jdir/\@done";
             xmove $jdir, "$root/job/archive/$j";
             if (defined $receipt) {
-                my $rcptfh = xopen '>>', $receipt;
-                xcopy("$jdir/wjob", $rcptfh);
-                print $rcptfh "\n%log\n";
-                xcopy("$jdir/log", $rcptfh);
+                xcat(xopen('<', "$jdir/wjob"), "\n%log\n", xopen('<', "$jdir/log"), '>', $receipt);
             }
         }
     }
@@ -341,6 +338,24 @@ sub xopen {
     my ($mode, $file) = @_;
     open my $fh, $mode, $file or fatal "open $mode $file: $!";
     return $fh;
+}
+
+sub xcat {
+    my $outfh = pop @_;
+    if (!ref $outfh) {
+        $outfh = xopen pop(@_), $outfh;
+    }
+    foreach my $src (@_) {
+        if (ref $src) {
+            while (<$src>) {
+                print $outfh $_;
+            }
+        }
+        else {
+            print $outfh $src;
+        }
+    }
+    close $outfh;
 }
 
 sub xmkdir {
