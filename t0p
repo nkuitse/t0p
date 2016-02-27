@@ -21,6 +21,8 @@ sub xmkdir;
 sub xchdir;
 sub xmove;
 sub xcopy;
+sub xsymlink;
+sub xunlink;
 
 my $prog = basename($0);
 if ($prog eq 't0p') {
@@ -260,6 +262,7 @@ sub prog_write {
         my @b = batches_in_job($jdir, 'b');
         next if !@b;
         my $job = read_job("$jdir/wjob");
+        my $job_receipt = $receipt // $job->{receipt};
         if (!$dryrun) {
             xmove "$jdir/\@ready", "$jdir/\@busy";
             read_label() if !%label;
@@ -268,8 +271,14 @@ sub prog_write {
         if (!$dryrun) {
             xmove "$jdir/\@busy", "$jdir/\@done";
             xunlink $jlink;
-            if (defined $receipt) {
-                xcat(xopen('<', "$jdir/wjob"), "\n%log\n", xopen('<', "$jdir/log"), '>', $receipt);
+            if (defined $job_receipt) {
+                xcat(
+                    xopen('<', "$jdir/wjob"),
+                    "\n%log\n",
+                    xopen('<', "$jdir/log"),
+                    "\n",
+                    '>>', $job_receipt
+                );
             }
         }
     }
