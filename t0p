@@ -241,7 +241,7 @@ sub prog_write {
         @common_options,
         'a' => \$all,
         'n' => \$dryrun,
-        'y' => \$receipt,
+        'y=s' => \$receipt,
     ) or usage;
     $device = '/dev/null' if $dryrun;
     init_defaults();
