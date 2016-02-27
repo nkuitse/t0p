@@ -149,8 +149,24 @@ EOS
         print $bfh $_, "\n" for '', '%files', @files, '';
     }
     elsif ($list) {
-        print "Q $_\n" for jobs_in_queue();
-        print "- $_\n" for jobs_not_in_queue();
+        my @j = jobs();
+        foreach my $j (@j) {
+            my $jdir = jdir($j);
+            my $status = substr(basename(glob("$jdir/\@*")), 1);
+            my $type   = substr(basename(glob("$jdir/?job")), 0, 1);
+            if ($status eq 'busy') {
+                printf "* %s %s\n", $type, $j;
+            }
+            if ($status eq 'ready') {
+                printf "r %s %s\n", $type, $j;
+            }
+            elsif ($status eq 'done') {
+                printf "x %s %s\n", $type, $j if $verbose;
+            }
+            else {
+                printf "n %s %s\n", $type, $j;
+            }
+        }
     }
 }
 
@@ -678,25 +694,21 @@ sub mktmp {
     return $f;
 }
 
-sub jobs_not_in_queue {
+sub jobs {
     my @jobs;
     foreach (glob("$root/job/*/?job")) {
         my @parts = split '/';
         pop @parts;
-        my $job = pop @parts;
-        push @jobs, $job;
+        my $j = pop @parts;
+        push @jobs, $j;
     }
     return @jobs;
 }
 
 sub jobs_in_queue {
-    my @job_statuses = glob("$queue/*/\@*");
     my @jobs;
-    foreach (@job_statuses) {
-        my @parts = split '/';
-        my $status = pop @parts;
-        my $job = pop @parts;
-        push @jobs, $job;
+    foreach my $j (jobs()) {
+        push @jobs, $j if -e "$queue/$j";
     }
     return @jobs;
 }
