@@ -493,6 +493,7 @@ sub read_label {
     my $sha256 = Digest->new('SHA-256');
     $sha256->add(substr($buf, 0, 2048));
     $label{hash} = $sha256->hexdigest;
+    $tape //= $label{label} // 'hash='.$label{hash};
 }
 
 sub write_label {
