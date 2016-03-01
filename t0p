@@ -341,6 +341,7 @@ sub prog_scan {
         @common_options,
         'm=i' => \$maxfiles,
     ) or usage;
+    usage if @ARGV;
     init_defaults();
     printf "%7.7s  %4.4s  %-10.10s  %s\n", qw(Filenum Type Date Description);
     read_label();
