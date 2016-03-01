@@ -336,6 +336,11 @@ EOS
 }
 
 sub prog_scan {
+    my $maxfiles;
+    GetOptions(
+        @common_options,
+        'm=i' => \$maxfiles,
+    ) or usage;
     init_defaults();
     printf "%7.7s  %4.4s  %-10.10s  %s\n", qw(Filenum Type Date Description);
     read_label();
@@ -349,6 +354,7 @@ sub prog_scan {
         chomp @output;
         my $first = shift @output;
         printf "%7d  %4.4s  %-10.10s  %s\n", $status{filenum}, '?', '?', $first;
+        last if defined $maxfiles && !--$maxfiles;
         get_status();
     }
     get_status();
