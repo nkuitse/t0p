@@ -318,7 +318,7 @@ EOS
             push @flags, $_ if $status{$_};
         }
         @flags = ('--') if !@flags;
-        printf <<'EOS', @status{qw(blocksize filenum blocknum position)}, join(',',@flags);
+        printf <<'EOS', @status{qw(blocksize filenum file_blocknum position)}, join(',',@flags);
 online        : yes
 block size    : %d
 file number   : %d
@@ -351,7 +351,7 @@ sub prog_scan {
     }
     get_status();
     while (1) {
-        mt('fsf'), get_status() if $status{blocknum} != 0;
+        mt('fsf'), get_status() if $status{file_blocknum} != 0;
         my @output = qx{afio -t -A -b $block_size -v -B $device 2> /dev/null};
         last if $?;
         print("EOF\n"), last if !@output;
@@ -372,7 +372,85 @@ sub prog_scan {
     print "EOD\n" if $status{eod};
 }
 
+sub prog_seek {
+    my ($filenum, $file_blocknum);
+    GetOptions(
+        @common_options,
+        'f=i' => \$filenum,
+        'b=i' => \$file_blocknum,
+        'p=i' => sub { fatal 'seek to absolute position not yet implemented' },
+    ) or usage;
+    if (@ARGV == 1) {
+        usage if defined $filenum;
+        ($filenum) = @ARGV;
+    }
+    elsif (@ARGV) {
+        usage;
+    }
+    init_defaults();
+    get_status();
+    # Go to the desired file
+    if ($filenum > $status{filenum}) {
+        mt('fsf', $filenum - $status{filenum});
+    }
+    elsif ($filenum == $status{filenum}) {
+        # Nothing to do
+    }
+    elsif ($filenum < $status{filenum} / 3) {
+        # Heuristic: if we have to go back more than 2/3 of the way to the
+        # beginning of the tape, just rewind and seek forward.  This makes
+        # sense if fsf and bsf are equally fast and rewinding is twice as fast.
+        mt('asf', $filenum);
+    }
+    else {
+        my $diff = $status{filenum} - $filenum;
+        mt('bsfm', $diff + 1);
+    }
+    # Go to the desired block within the file
+    if (defined $file_blocknum) {
+        get_status();
+        if ($status{file_blocknum} < 0 || $file_blocknum < $status{file_blocknum}) {
+            mt('bsfm', 1);
+            get_status();
+        }
+        if ($file_blocknum > $status{file_blocknum}) {
+            file_block_fwd($file_blocknum - $status{file_blocknum});
+        }
+    }
+}
+
+sub prog_tell {
+    my @what;
+    GetOptions(
+        @common_options,
+        'f' => sub { push @what, qw(filenum) },
+        'b' => sub { push @what, qw(file_blocknum) },
+        'p' => sub { push @what, qw(position) },
+    ) or usage;
+    my $fmt = join(' ', map { '%d' } @what) . "\n";
+    init_defaults();
+    get_status();
+    printf $fmt, @status{@what};
+}
+
 # --- Functions
+
+sub read_block {
+    my ($fh, $bufref) = @_;
+    my $read = read($fh, $$bufref, $status{blocksize});
+    return if !defined($read) || $read != $status{blocksize};
+    return 1;
+}
+
+sub file_block_fwd {
+    my ($num_blocks) = @_;
+    get_status();
+    my $fh = xopen('<', $device);
+    my $buf;
+    while ($num_blocks--) {
+        read_block($fh, \$buf) or fatal "read: unexpected EOF";
+    }
+}
 
 sub jdir { "$root/job/" . shift }
 
@@ -499,7 +577,7 @@ sub tapeinfo {
 sub get_status {
     return %status = (
         filenum => 0,
-        blocknum => 0,
+        file_blocknum => 0,
         partition => 0,
         online => 1,
         eod => 1,
@@ -510,7 +588,7 @@ sub get_status {
     my $fh = mt('status');
     while (<$fh>) {
         $status{filenum}   = $1 if /file number[=: ]+([0-9]+)/i;
-        $status{blocknum}  = $1 if /block number[=: ]+(-?[0-9]+)/i;
+        $status{file_blocknum} = $1 if /block number[=: ]+(-?[0-9]+)/i;
         $status{partition} = $1 if /partition[=: ]+([0-9]+)/i;
         $status{online}    = 1  if /\bONLINE\b/i;
         $status{eod}       = 1  if /\bEOD\b/i;
