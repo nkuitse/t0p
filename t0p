@@ -336,25 +336,35 @@ EOS
 }
 
 sub prog_scan {
-    my $maxfiles;
+    my $include_label;
     GetOptions(
         @common_options,
-        'm=i' => \$maxfiles,
+        'l' => \$include_label,
     ) or usage;
-    usage if @ARGV;
+    usage if @ARGV > 1;
+    my $maxfiles = @ARGV ? shift @ARGV: 1;
     init_defaults();
-    printf "%7.7s  %4.4s  %-10.10s  %s\n", qw(Filenum Type Date Description);
-    read_label();
-    printf "%7d  %4.4s  %-10.10s  Tape %s label: hash=%s\n", 0, 'L', $label{created} ? strftime('%Y-%m-%d', localtime $label{created}) : '?', $label{label} // '?', $label{hash};
+    printf "%8.8s %8.8s %-5.5s %s\n", qw(Filenum Position Batch Job);
+    if ($include_label) {
+        read_label();
+        printf "%8d %8d %-5.5s %s (hash=%s)\n", 0, 0, 'LABEL', $label{label} // '?', $label{hash};
+    }
     get_status();
     while (1) {
         mt('fsf'), get_status() if $status{blocknum} != 0;
         my @output = qx{afio -t -A -b $block_size -v -B $device 2> /dev/null};
         last if $?;
-        print("EOF\n"), next if !@output;
-        chomp @output;
-        my $first = shift @output;
-        printf "%7d  %4.4s  %-10.10s  %s\n", $status{filenum}, '?', '?', $first;
+        print("EOF\n"), last if !@output;
+        my ($j, $b) = map {
+            m:/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/\@([0-9]+):
+                ? ($1, $2) : ()
+        } @output;
+        if (defined $j) {
+            printf "%8d %8d %5d %s\n", $status{filenum}, $status{position}, $b, $j;
+        }
+        else {
+            printf "%8d %8d %-5.5s %s", $status{filenum}, $status{position}, '?', $output[0];
+        }
         last if defined $maxfiles && !--$maxfiles;
         get_status();
     }
@@ -588,20 +598,20 @@ sub procwbatches {
         $job->{device} = $device;
     }
     my $jdir = $job->{dir};
-    my $logfh = $dryrun ? \*STDERR : xopen '>>', "$jdir/log";
+    my $jlogfh = $dryrun ? \*STDERR : xopen '>>', "$jdir/log";
     my $jfile = "$jdir/wjob";
     my %tapes;
     # cd job root
     my $cwd = cwd;
     my $dir = $job->{root} // '/';
     $dir =~ m{^/} or fatal "relative job root: $dir";
-    printf $logfh "J %s begin %d\n", $j, time;
+    printf $jlogfh "J %s begin %d\n", $j, time;
     xchdir $dir;
     foreach my $b (@b) {
-        procwbatch($job, $logfh, "$jdir/$b");
+        procwbatch($job, $jlogfh, "$jdir/$b");
     }
     xchdir $cwd;
-    printf $logfh "J %s end %d\n", $j, time;
+    printf $jlogfh "J %s end %d\n", $j, time;
 }
 
 sub unique {
@@ -644,7 +654,7 @@ sub read_batch {
 }
 
 sub procwbatch {
-    my ($job, $logfh, $bfile) = @_;
+    my ($job, $jlogfh, $bfile) = @_;
     my $jdir = dirname($bfile);
     my $batch = read_batch($bfile);
     my $n = $batch->{number};
@@ -661,33 +671,42 @@ sub procwbatch {
         push @files, $afile;
     }
     push @files, "$jdir/wjob", @{ $batch->{files} };
-    printf $logfh "B %d begin %d files %d\n", $n, time, scalar(@files);
     my $manifest = mktmp(manifest => @files);
 
     # Write the archive
     get_status();
+    my ($filenum, $position) = @status{qw(filenum position)};
     my %fail = map { $_ => 1 } @files;
-    printf $logfh "T %s filenum %d\n", $tape // '?', $status{filenum};
+    printf $jlogfh "T %s filenum %d position %d\n", $tape // '?', $filenum, $position;
+    printf $jlogfh "B %d begin %d files %d\n", $n, time, scalar(@files);
     open my $fhafio, "afio -o -A -b $block_size -v -B $device < $manifest 2>&1 |"
         or fatal "exec afio: $!";
     while (<$fhafio>) {
         if (/^([0-9]+) (.+) -- okay$/) {
-            printf $logfh "F %d %s\n", $1, $2;
+            printf $jlogfh "F %d %s\n", $1, $2;
             delete $fail{$2};
         }
         else {
-            print $logfh '* ', $_;
+            print $jlogfh '* ', $_;
         }
     }
     unlink $manifest;
     close $fhafio or fatal "afio: $!";
 
     # Log any failed files
-    print $logfh "E $_\n" for sort keys %fail;
+    print $jlogfh "E $_\n" for sort keys %fail;
+
+    # Record in the tape log
+    if (-d "$root/tape/$tape") {
+        my $tlog = "$root/tape/$tape/log";
+        my $tlogfh = xopen('>>', $tlog);
+        my $j = $job->{job};
+        print $tlogfh "$filenum $position $n $j\n";
+    }
 
     # Rename @n ---> wn
     xmove $afile, $wfile if !$dryrun;
-    printf $logfh "B %d end %d errors %d\n", $n, time, scalar keys %fail;
+    printf $jlogfh "B %d end %d errors %d\n", $n, time, scalar keys %fail;
 }
 
 sub mktmp {
