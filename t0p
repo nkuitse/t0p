@@ -427,6 +427,7 @@ sub prog_tell {
         'b' => sub { push @what, qw(file_blocknum) },
         'p' => sub { push @what, qw(position) },
     ) or usage;
+    @what = qw(filenum) if !@what;
     my $fmt = join(' ', map { '%d' } @what) . "\n";
     init_defaults();
     get_status();
