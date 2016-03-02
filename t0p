@@ -48,7 +48,7 @@ my @common_options = (
 );
 
 (my $cmd = $prog) =~ s/^t0// or fatal "bizarre invocation: $prog";
-&{ __PACKAGE__->can('prog_'.$cmd) || fatal "unrecognized invocation: $cmd" };
+&{ __PACKAGE__->can('prog_'.$cmd) || fatal "unrecognized command: $cmd" };
 
 # Subprograms
 
@@ -701,7 +701,7 @@ sub procwbatch {
         my $tlog = "$root/tape/$tape/log";
         my $tlogfh = xopen('>>', $tlog);
         my $j = $job->{job};
-        print $tlogfh "$filenum $position $n $j\n";
+        print $tlogfh "$filenum $position $j $n\n";
     }
 
     # Rename @n ---> wn
