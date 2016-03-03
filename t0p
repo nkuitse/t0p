@@ -387,7 +387,7 @@ sub prog_seek {
     }
     elsif (@ARGV == 2) {
         usage if defined $filenum || defined $file_blocknum;
-        ($filenum, $blocknum) = @ARGV;
+        ($filenum, $file_blocknum) = @ARGV;
     }
     elsif (@ARGV) {
         usage;
@@ -455,8 +455,9 @@ sub prog_read {
     $| = 1;
     if (@ARGV) {
         my ($num_blocks) = @ARGV;
-        while (read_block($fh, \$buf) && $num_blocks--) {
+        while (read_block($fh, \$buf)) {
             print $buf;
+            last if --$num_blocks == 0;
         }
         fatal "read: unexpected EOF" if $num_blocks != 0;
     }
