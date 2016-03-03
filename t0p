@@ -425,17 +425,32 @@ sub prog_seek {
 }
 
 sub prog_tell {
-    my @what;
+    my (@what, $restore_pos);
     GetOptions(
         @common_options,
         'f' => sub { push @what, qw(filenum) },
         'b' => sub { push @what, qw(file_blocknum) },
         'p' => sub { push @what, qw(position) },
+        'j' => sub { push @what, qw(job batch) },
+        'r' => \$restore_pos,
     ) or usage;
     @what = qw(filenum) if !@what;
-    my $fmt = join(' ', map { '%d' } @what) . "\n";
+    my $fmt = join(' ', map { '%s' } @what) . "\n";
     init_defaults();
     get_status();
+    if (grep { $_ eq 'job' } @what) {
+        my @output = qx{afio -t -A -b $block_size -v -B $device 2> /dev/null};
+        my ($j, $b) = map {
+            m:/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/\@([0-9]+):
+                ? ($1, $2) : ()
+        } @output;
+        fatal "tell: not a t0p batch, or positioned wrong" if !defined $j;
+        @status{qw(job batch)} = ($j, $b);
+        if ($restore_pos) {
+            @ARGV = @status{qw(filenum file_blocknum)};
+            prog_seek();
+        }
+    }
     printf $fmt, @status{@what};
 }
 
@@ -461,6 +476,10 @@ sub prog_read {
             print $buf;
         }
     }
+}
+
+sub prog_ls {
+
 }
 
 # --- Functions
