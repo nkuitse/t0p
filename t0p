@@ -374,26 +374,21 @@ sub prog_scan {
 
 sub prog_seek {
     my ($eod, $filenum, $file_blocknum);
+    Getopt::Long::Configure('pass_through');
     GetOptions(
         @common_options,
         'e' => \$eod,
-        'f=i' => \$filenum,
-        'b=i' => \$file_blocknum,
-        'p=i' => sub { fatal 'seek to absolute position not yet implemented' },
-    ) or usage;
-    if (@ARGV == 1) {
-        usage if defined $filenum;
-        ($filenum) = @ARGV;
-    }
-    elsif (@ARGV == 2) {
-        usage if defined $filenum || defined $file_blocknum;
-        ($filenum, $file_blocknum) = @ARGV;
-    }
-    elsif (@ARGV) {
-        usage;
-    }
+    );
+    usage if @ARGV < 1 || @ARGV > 2;
+    usage if $eod && @ARGV;
+    ($filenum, $file_blocknum) = @ARGV;
+    $file_blocknum = 0 if !defined $file_blocknum;
+    $filenum = '+0' if $filenum eq '.';
+    $file_blocknum = '+0' if $file_blocknum eq '.';
     init_defaults();
     get_status();
+    $filenum += $status{filenum} if $filenum =~ /^[-+]/;
+    $file_blocknum += $status{file_blocknum} if $file_blocknum =~ /^[-+]/;
     # Go to the desired file
     if ($eod) {
         usage if defined($filenum) || defined($file_blocknum);
