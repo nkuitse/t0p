@@ -478,10 +478,6 @@ sub prog_read {
     }
 }
 
-sub prog_ls {
-
-}
-
 # --- Functions
 
 sub read_block {
