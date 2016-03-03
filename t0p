@@ -373,9 +373,10 @@ sub prog_scan {
 }
 
 sub prog_seek {
-    my ($filenum, $file_blocknum);
+    my ($eod, $filenum, $file_blocknum);
     GetOptions(
         @common_options,
+        'e' => \$eod,
         'f=i' => \$filenum,
         'b=i' => \$file_blocknum,
         'p=i' => sub { fatal 'seek to absolute position not yet implemented' },
@@ -384,13 +385,22 @@ sub prog_seek {
         usage if defined $filenum;
         ($filenum) = @ARGV;
     }
+    elsif (@ARGV == 2) {
+        usage if defined $filenum || defined $file_blocknum;
+        ($filenum, $blocknum) = @ARGV;
+    }
     elsif (@ARGV) {
         usage;
     }
     init_defaults();
     get_status();
     # Go to the desired file
-    if ($filenum > $status{filenum}) {
+    if ($eod) {
+        usage if defined($filenum) || defined($file_blocknum);
+        mt('eod');
+        return;
+    }
+    elsif ($filenum > $status{filenum}) {
         mt('fsf', $filenum - $status{filenum});
     }
     elsif ($filenum == $status{filenum}) {
@@ -434,22 +444,44 @@ sub prog_tell {
     printf $fmt, @status{@what};
 }
 
+sub prog_read {
+    GetOptions(
+        @common_options,
+    ) or usage;
+    init_defaults();
+    get_status();
+    my $fh = xopen('<', $device);
+    my $buf = '';
+    $| = 1;
+    if (@ARGV) {
+        my ($num_blocks) = @ARGV;
+        while (read_block($fh, \$buf) && $num_blocks--) {
+            print $buf;
+        }
+        fatal "read: unexpected EOF" if $num_blocks != 0;
+    }
+    else {
+        while (read_block($fh, \$buf)) {
+            print $buf;
+        }
+    }
+}
+
 # --- Functions
 
 sub read_block {
     my ($fh, $bufref) = @_;
     my $read = read($fh, $$bufref, $status{blocksize});
-    return if !defined($read) || $read != $status{blocksize};
-    return 1;
+    fatal "read: $!" if !defined $read;
+    return $read == $status{blocksize};
 }
 
 sub file_block_fwd {
     my ($num_blocks) = @_;
-    get_status();
     my $fh = xopen('<', $device);
     my $buf;
     while ($num_blocks--) {
-        read_block($fh, \$buf) or fatal "read: unexpected EOF";
+        read_block($fh, \$buf);
     }
 }
 
