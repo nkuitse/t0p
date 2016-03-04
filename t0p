@@ -870,7 +870,8 @@ sub batches_in_job {
         next if !m{.+/([bwr])([0-9]+)$};
         $batch{$1.$2} = $1 if $want{$1};
     }
-    return wantarray ? keys %batch : \%batch;
+    return \%batch if !wantarray;
+    return sort { substr($a, 1) <=> substr($b, 1) } keys %batch;
 }
 
 sub uuid {
