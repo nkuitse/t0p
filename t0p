@@ -271,7 +271,16 @@ sub prog_write {
         usage 'write [ -a | JOB BATCH... ]' if @ARGV < 1;
         @job_dirs = map { "$queue/$_" } @ARGV;
     }
-    xmove "$drive/\@idle", "$drive/\@busy" if !$dryrun;
+    if (!@job_dirs) {
+        print STDERR "no jobs to write\n" if $verbose;
+        exit 0;
+    }
+    if (!$dryrun) {
+        xmove "$drive/tape/\@loaded", "$drive/tape/\@busy";
+        xmove "$drive/\@idle", "$drive/\@busy";
+        read_label("$drive/tape/\@loaded/../label")
+            if -e "$drive/tape/\@loaded/../label";
+    }
     foreach my $jlink (@job_dirs) {
         my $jdir = readlink $jlink;
         my $j = basename($jdir);
@@ -298,7 +307,10 @@ sub prog_write {
             }
         }
     }
-    xmove "$drive/\@busy", "$drive/\@idle" if !$dryrun;
+    if (!$dryrun) {
+        xmove "$drive/tape/\@busy", "$drive/tape/\@loaded";
+        xmove "$drive/\@busy", "$drive/\@idle";
+    }
 }
 
 sub prog_stat {
@@ -649,8 +661,11 @@ sub get_status {
 }
 
 sub read_label {
-    mt('rewind') or fatal "mt rewind: $!";
-    my $fh = xopen '<', $device;
+    my ($f) = @_;
+    if (!@_) {
+        mt('rewind') or fatal "mt rewind: $!";
+    }
+    my $fh = xopen '<', $f // $device;
     my $read = read($fh, my $buf, $block_size)
         or fatal "read label: $!";
     close $fh;
