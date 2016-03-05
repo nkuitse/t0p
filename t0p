@@ -582,8 +582,9 @@ sub procwbatch {
 
     # Write the archive
     get_status();
+    my $pos = $status{position};
     my %fail = map { $_ => 1 } @files;
-    printf $logfh "T %s filenum %d\n", $tape // '?', $status{filenum};
+    printf $logfh "T %s position %d filenum %d\n", $tape // '?', $pos, $status{filenum};
     open my $fhafio, "afio -o -A -b $block_size -v -B $device < $manifest 2>&1 |"
         or fatal "exec afio: $!";
     while (<$fhafio>) {
@@ -603,7 +604,8 @@ sub procwbatch {
 
     # Rename @n ---> wn
     xmove $afile, $wfile if !$dryrun;
-    printf $logfh "B %d end %d errors %d\n", $n, time, scalar keys %fail;
+    get_status();
+    printf $logfh "B %d end %d blocks %d errors %d\n", $n, time, $status{position} - $pos, scalar keys %fail;
 }
 
 sub mktmp {
