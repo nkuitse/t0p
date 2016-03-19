@@ -743,13 +743,10 @@ sub procwbatches {
     $dir =~ m{^/} or fatal "relative job root: $dir";
     printf $jlogfh "J %s begin %d\n", $j, time;
     xchdir $dir;
-    printf $logfh "J %s begin %d\n", $j, time;
     foreach my $b (@b) {
         procwbatch($job, $jlogfh, "$jdir/$b");
     }
     get_status();
-    printf $logfh "T %s position %d filenum %d\n", $tape // '?', $status{position}, $status{filenum};
-    printf $logfh "J %s end %d\n", $j, time;
     xchdir $cwd;
     printf $jlogfh "J %s end %d\n", $j, time;
 }
