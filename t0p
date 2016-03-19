@@ -278,7 +278,7 @@ sub prog_write {
     if (!$dryrun) {
         xmove "$drive/tape/\@loaded", "$drive/tape/\@busy";
         xmove "$drive/\@idle", "$drive/\@busy";
-        read_label("$drive/tape/\@busy/../label");
+        read_label("$drive/tape/\@busy/../label")
             if -e "$drive/tape/\@busy/../label";
     }
     foreach my $jlink (@job_dirs) {
