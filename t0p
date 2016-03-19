@@ -7,6 +7,7 @@ use Digest;
 use Cwd;
 use File::Basename qw(basename dirname);
 use File::Copy qw(move copy);
+use POSIX qw(strftime);
 use Getopt::Long
     qw(:config posix_default gnu_compat bundling no_ignore_case);
 
@@ -20,6 +21,8 @@ sub xmkdir;
 sub xchdir;
 sub xmove;
 sub xcopy;
+sub xsymlink;
+sub xunlink;
 
 my $prog = basename($0);
 if ($prog eq 't0p') {
@@ -45,18 +48,17 @@ my @common_options = (
 );
 
 (my $cmd = $prog) =~ s/^t0// or fatal "bizarre invocation: $prog";
-&{ __PACKAGE__->can('prog_'.$cmd) || fatal "unrecognized invocation: $cmd" };
+&{ __PACKAGE__->can('prog_'.$cmd) || fatal "unrecognized command: $cmd" };
 
 # Subprograms
 
 sub prog_queue {
-    my ($add, $create, $list, $symlink);
+    my ($add, $create, $list);
     GetOptions(
         @common_options,
         'a' => \$add,
         'c' => \$create,
         'l' => \$list,
-        's' => \$symlink,
     ) or usage;
     init_defaults();
     $list = 1 if !$add && !$create;
@@ -73,15 +75,13 @@ sub prog_queue {
         my @b = batches_in_job($jdir, 'b');
         fatal "no unprocessed batches in job $j" if !@b;
         xmkdir "$jdir/\@ready";
-        xmove $jdir, "$queue/$j";
+        xsymlink $jdir, "$queue/$j";
     }
     elsif ($create) {
         usage '-c -q QUEUE' if !@ARGV;
         fatal 'not yet implemented: -c';
     }
 }
-
-sub jdir { "$root/job/" . shift }
 
 sub prog_job {
     my ($add, $create, $list, %prop);
@@ -149,8 +149,24 @@ EOS
         print $bfh $_, "\n" for '', '%files', @files, '';
     }
     elsif ($list) {
-        print "Q $_\n" for jobs_in_queue();
-        print "- $_\n" for jobs_not_in_queue();
+        my @j = jobs();
+        foreach my $j (@j) {
+            my $jdir = jdir($j);
+            my $status = substr(basename(glob("$jdir/\@*")), 1);
+            my $type   = substr(basename(glob("$jdir/?job")), 0, 1);
+            if ($status eq 'busy') {
+                printf "* %s %s\n", $type, $j;
+            }
+            if ($status eq 'ready') {
+                printf "r %s %s\n", $type, $j;
+            }
+            elsif ($status eq 'done') {
+                printf "x %s %s\n", $type, $j if $verbose;
+            }
+            else {
+                printf "n %s %s\n", $type, $j;
+            }
+        }
     }
 }
 
@@ -235,10 +251,287 @@ sub prog_label {
     }
 }
 
+sub prog_write {
+    # usage: t0write [-y FILE] [ -a | JOB BATCH... ]
+    my ($all, $receipt);
+    GetOptions(
+        @common_options,
+        'a' => \$all,
+        'n' => \$dryrun,
+        'y=s' => \$receipt,
+    ) or usage;
+    $device = '/dev/null' if $dryrun;
+    init_defaults();
+    my @job_dirs;
+    if ($all) {
+        usage 'write [ -a | JOB BATCH... ]' if @ARGV;
+        @job_dirs = map { "$queue/$_" } jobs_in_queue();
+    }
+    else {
+        usage 'write [ -a | JOB BATCH... ]' if @ARGV < 1;
+        @job_dirs = map { "$queue/$_" } @ARGV;
+    }
+    if (!@job_dirs) {
+        print STDERR "no jobs to write\n" if $verbose;
+        exit 0;
+    }
+    if (!$dryrun) {
+        xmove "$drive/tape/\@loaded", "$drive/tape/\@busy";
+        xmove "$drive/\@idle", "$drive/\@busy";
+        read_label("$drive/tape/\@busy/../label");
+            if -e "$drive/tape/\@busy/../label";
+    }
+    foreach my $jlink (@job_dirs) {
+        my $jdir = readlink $jlink;
+        my $j = basename($jdir);
+        my @b = batches_in_job($jdir, 'b');
+        next if !@b;
+        my $job = read_job("$jdir/wjob");
+        my $job_receipt = $receipt // $job->{receipt};
+        if (!$dryrun) {
+            xmove "$jdir/\@ready", "$jdir/\@busy";
+            read_label() if !%label;
+        }
+        procwbatches($job, @b);
+        if (!$dryrun) {
+            xmove "$jdir/\@busy", "$jdir/\@done";
+            xunlink $jlink;
+            if (defined $job_receipt) {
+                xcat(
+                    xopen('<', "$jdir/wjob"),
+                    "\n%log\n",
+                    xopen('<', "$jdir/log"),
+                    "\n",
+                    '>>', $job_receipt
+                );
+            }
+        }
+    }
+    if (!$dryrun) {
+        xmove "$drive/tape/\@busy", "$drive/tape/\@loaded";
+        xmove "$drive/\@busy", "$drive/\@idle";
+    }
+}
+
+sub prog_stat {
+    # usage: t0stat [-v] [DRIVE]
+    GetOptions(
+        @common_options,
+    ) or usage;
+    init_defaults();
+    get_status();
+    printf <<'EOS', basename($drive), readlink($device);
+drive         : %s
+device        : %s
+EOS
+    if ($status{online}) {
+        my @flags;
+        foreach (qw(bot eof eod)) {
+            push @flags, $_ if $status{$_};
+        }
+        @flags = ('--') if !@flags;
+        printf <<'EOS', @status{qw(blocksize filenum file_blocknum position)}, join(',',@flags);
+online        : yes
+block size    : %d
+file number   : %d
+block in file : %d
+block on tape : %d
+flags         : %s
+EOS
+    }
+    else {
+        printf <<'EOS', @status{qw(blocksize)};
+online        : no
+block size    : %d
+EOS
+    }
+}
+
+sub prog_scan {
+    my $include_label;
+    GetOptions(
+        @common_options,
+        'l' => \$include_label,
+    ) or usage;
+    usage if @ARGV > 1;
+    my $maxfiles = @ARGV ? shift @ARGV: 1;
+    init_defaults();
+    printf "%8.8s %8.8s %-5.5s %s\n", qw(Filenum Position Batch Job);
+    if ($include_label) {
+        read_label();
+        printf "%8d %8d %-5.5s %s (hash=%s)\n", 0, 0, 'LABEL', $label{label} // '?', $label{hash};
+    }
+    get_status();
+    while (1) {
+        mt('fsf'), get_status() if $status{file_blocknum} != 0;
+        my @output = qx{afio -t -A -b $block_size -v -B $device 2> /dev/null};
+        last if $?;
+        print("EOF\n"), last if !@output;
+        my ($j, $b) = map {
+            m:/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/\@([0-9]+):
+                ? ($1, $2) : ()
+        } @output;
+        if (defined $j) {
+            printf "%8d %8d %5d %s\n", $status{filenum}, $status{position}, $b, $j;
+        }
+        else {
+            printf "%8d %8d %-5.5s %s", $status{filenum}, $status{position}, '?', $output[0];
+        }
+        last if defined $maxfiles && !--$maxfiles;
+        get_status();
+    }
+    get_status();
+    print "EOD\n" if $status{eod};
+}
+
+sub prog_seek {
+    my ($eod, $filenum, $file_blocknum);
+    Getopt::Long::Configure('pass_through');
+    GetOptions(
+        @common_options,
+        'e' => \$eod,
+    );
+    usage if @ARGV < 1 || @ARGV > 2;
+    usage if $eod && @ARGV;
+    ($filenum, $file_blocknum) = @ARGV;
+    $file_blocknum = 0 if !defined $file_blocknum;
+    $filenum = '+0' if $filenum eq '.';
+    $file_blocknum = '+0' if $file_blocknum eq '.';
+    init_defaults();
+    get_status();
+    $filenum += $status{filenum} if $filenum =~ /^[-+]/;
+    $file_blocknum += $status{file_blocknum} if $file_blocknum =~ /^[-+]/;
+    # Go to the desired file
+    if ($eod) {
+        usage if defined($filenum) || defined($file_blocknum);
+        mt('eod');
+        return;
+    }
+    elsif ($filenum > $status{filenum}) {
+        mt('fsf', $filenum - $status{filenum});
+    }
+    elsif ($filenum == $status{filenum}) {
+        # Nothing to do
+    }
+    elsif ($filenum < $status{filenum} / 3) {
+        # Heuristic: if we have to go back more than 2/3 of the way to the
+        # beginning of the tape, just rewind and seek forward.  This makes
+        # sense if fsf and bsf are equally fast and rewinding is twice as fast.
+        mt('asf', $filenum);
+    }
+    else {
+        my $diff = $status{filenum} - $filenum;
+        mt('bsfm', $diff + 1);
+    }
+    # Go to the desired block within the file
+    if (defined $file_blocknum) {
+        get_status();
+        if ($status{file_blocknum} < 0 || $file_blocknum < $status{file_blocknum}) {
+            mt('bsfm', 1);
+            get_status();
+        }
+        if ($file_blocknum > $status{file_blocknum}) {
+            file_block_fwd($file_blocknum - $status{file_blocknum});
+        }
+    }
+}
+
+sub prog_tell {
+    my (@what, $restore_pos);
+    GetOptions(
+        @common_options,
+        'f' => sub { push @what, qw(filenum) },
+        'b' => sub { push @what, qw(file_blocknum) },
+        'p' => sub { push @what, qw(position) },
+        'j' => sub { push @what, qw(job batch) },
+        'r' => \$restore_pos,
+    ) or usage;
+    @what = qw(filenum) if !@what;
+    my $fmt = join(' ', map { '%s' } @what) . "\n";
+    init_defaults();
+    get_status();
+    if (grep { $_ eq 'job' } @what) {
+        my @output = qx{afio -t -A -b $block_size -v -B $device 2> /dev/null};
+        my ($j, $b) = map {
+            m:/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})/\@([0-9]+):
+                ? ($1, $2) : ()
+        } @output;
+        fatal "tell: not a t0p batch, or positioned wrong" if !defined $j;
+        @status{qw(job batch)} = ($j, $b);
+        if ($restore_pos) {
+            @ARGV = @status{qw(filenum file_blocknum)};
+            prog_seek();
+        }
+    }
+    printf $fmt, @status{@what};
+}
+
+sub prog_read {
+    GetOptions(
+        @common_options,
+    ) or usage;
+    init_defaults();
+    get_status();
+    my $fh = xopen('<', $device);
+    my $buf = '';
+    $| = 1;
+    if (@ARGV) {
+        my ($num_blocks) = @ARGV;
+        while (read_block($fh, \$buf)) {
+            print $buf;
+            last if --$num_blocks == 0;
+        }
+        fatal "read: unexpected EOF" if $num_blocks != 0;
+    }
+    else {
+        while (read_block($fh, \$buf)) {
+            print $buf;
+        }
+    }
+}
+
+# --- Functions
+
+sub read_block {
+    my ($fh, $bufref) = @_;
+    my $read = read($fh, $$bufref, $status{blocksize});
+    fatal "read: $!" if !defined $read;
+    return $read == $status{blocksize};
+}
+
+sub file_block_fwd {
+    my ($num_blocks) = @_;
+    my $fh = xopen('<', $device);
+    my $buf;
+    while ($num_blocks--) {
+        read_block($fh, \$buf);
+    }
+}
+
+sub jdir { "$root/job/" . shift }
+
 sub xopen {
     my ($mode, $file) = @_;
     open my $fh, $mode, $file or fatal "open $mode $file: $!";
     return $fh;
+}
+
+sub xcat {
+    my $outfh = pop @_;
+    if (!ref $outfh) {
+        $outfh = xopen pop(@_), $outfh;
+    }
+    foreach my $src (@_) {
+        if (ref $src) {
+            while (<$src>) {
+                print $outfh $_;
+            }
+        }
+        else {
+            print $outfh $src;
+        }
+    }
+    close $outfh;
 }
 
 sub xmkdir {
@@ -260,81 +553,13 @@ sub xcopy {
     copy($_[0], $_[1]) or fatal "copy $_[0] $_[1]: $!";
 }
 
-sub prog_write {
-    # usage: t0write [-y FILE] [ -a | JOB BATCH... ]
-    my ($all, $receipt);
-    GetOptions(
-        @common_options,
-        'a' => \$all,
-        'n' => \$dryrun,
-        'y' => \$receipt,
-    ) or usage;
-    $device = '/dev/null' if $dryrun;
-    init_defaults();
-    my @job_dirs;
-    if ($all) {
-        usage 'write [ -a | JOB BATCH... ]' if @ARGV;
-        @job_dirs = map { "$queue/$_" } jobs_in_queue();
-    }
-    else {
-        usage 'write [ -a | JOB BATCH... ]' if @ARGV < 1;
-        @job_dirs = map { "$queue/$_" } @ARGV;
-    }
-    xmove "$drive/\@idle", "$drive/\@busy" if !$dryrun;
-    foreach my $jdir (@job_dirs) {
-        my $j = basename($jdir);
-        my @b = batches_in_job($jdir, 'b');
-        next if !@b;
-        my $job = read_job("$jdir/wjob");
-        if (!$dryrun) {
-            xmove "$jdir/\@ready", "$jdir/\@busy";
-            read_label() if !%label;
-        }
-        procwbatches($job, @b);
-        if (!$dryrun) {
-            xmove "$jdir/\@busy", "$jdir/\@done";
-            xmove $jdir, "$root/job/archive/$j";
-            xcopy "$jdir/log", $receipt if defined $receipt;
-        }
-    }
-    xmove "$drive/\@busy", "$drive/\@idle" if !$dryrun;
+sub xsymlink {
+    symlink $_[0], $_[1] or fatal "symlink @_: $!";
 }
 
-sub prog_stat {
-    # usage: t0stat [-v] [DRIVE]
-    GetOptions(
-        @common_options,
-    ) or usage;
-    init_defaults();
-    get_status();
-    printf <<'EOS', $drive, readlink($device);
-drive        : %s
-device       : %s
-EOS
-    if ($status{online}) {
-        my @flags;
-        foreach (qw(bot eof eod)) {
-            push @flags, $_ if $status{$_};
-        }
-        @flags = ('--') if !@flags;
-        printf <<'EOS', @status{qw(filenum partition blocksize blocknum)}, join(',',@flags);
-online       : yes
-file number  : %d
-partition    : %d
-block size   : %d
-block number : %d
-flags        : %s
-EOS
-    }
-    else {
-        printf <<'EOS', @status{qw(blocksize)};
-online       : no
-block size   : %d
-EOS
-    }
+sub xunlink {
+    unlink $_[0] or fatal "unlink @_: $!";
 }
-
-# --- Functions
 
 sub read_job {
     my ($jfile) = @_;
@@ -408,7 +633,7 @@ sub tapeinfo {
 sub get_status {
     return %status = (
         filenum => 0,
-        blocknum => 0,
+        file_blocknum => 0,
         partition => 0,
         online => 1,
         eod => 1,
@@ -419,7 +644,7 @@ sub get_status {
     my $fh = mt('status');
     while (<$fh>) {
         $status{filenum}   = $1 if /file number[=: ]+([0-9]+)/i;
-        $status{blocknum}  = $1 if /block number[=: ]+(-?[0-9]+)/i;
+        $status{file_blocknum} = $1 if /block number[=: ]+(-?[0-9]+)/i;
         $status{partition} = $1 if /partition[=: ]+([0-9]+)/i;
         $status{online}    = 1  if /\bONLINE\b/i;
         $status{eod}       = 1  if /\bEOD\b/i;
@@ -436,8 +661,11 @@ sub get_status {
 }
 
 sub read_label {
-    mt('rewind') or fatal "mt rewind: $!";
-    my $fh = xopen '<', $device;
+    my ($f) = @_;
+    if (!@_) {
+        mt('rewind') or fatal "mt rewind: $!";
+    }
+    my $fh = xopen '<', $f // $device;
     my $read = read($fh, my $buf, $block_size)
         or fatal "read label: $!";
     close $fh;
@@ -452,6 +680,7 @@ sub read_label {
     my $sha256 = Digest->new('SHA-256');
     $sha256->add(substr($buf, 0, 2048));
     $label{hash} = $sha256->hexdigest;
+    $tape //= $label{label} // 'hash='.$label{hash};
 }
 
 sub write_label {
@@ -506,21 +735,23 @@ sub procwbatches {
         $job->{device} = $device;
     }
     my $jdir = $job->{dir};
-    my $logfh = $dryrun ? \*STDERR : xopen '>>', "$jdir/log";
+    my $jlogfh = $dryrun ? \*STDERR : xopen '>>', "$jdir/log";
     my $jfile = "$jdir/wjob";
     # cd job root
     my $cwd = cwd;
     my $dir = $job->{root} // '/';
     $dir =~ m{^/} or fatal "relative job root: $dir";
+    printf $jlogfh "J %s begin %d\n", $j, time;
     xchdir $dir;
     printf $logfh "J %s begin %d\n", $j, time;
     foreach my $b (@b) {
-        procwbatch($job, $logfh, "$jdir/$b");
+        procwbatch($job, $jlogfh, "$jdir/$b");
     }
     get_status();
     printf $logfh "T %s position %d filenum %d\n", $tape // '?', $status{position}, $status{filenum};
     printf $logfh "J %s end %d\n", $j, time;
     xchdir $cwd;
+    printf $jlogfh "J %s end %d\n", $j, time;
 }
 
 sub unique {
@@ -563,14 +794,14 @@ sub read_batch {
 }
 
 sub procwbatch {
-    my ($job, $logfh, $bfile) = @_;
+    my ($job, $jlogfh, $bfile) = @_;
     my $jdir = dirname($bfile);
     my $batch = read_batch($bfile);
     my $n = $batch->{number};
     my ($afile, $wfile) = map { "$jdir/$_$n" } qw(@ w);
 
     # Build the manifest
-    my @files = ("$jdir/wjob");
+    my @files;
     if ($dryrun) {
         push @files, $bfile;
     }
@@ -579,36 +810,43 @@ sub procwbatch {
         xmove $bfile, $afile;
         push @files, $afile;
     }
-    push @files, @{ $batch->{files} };
-    printf $logfh "B %d begin %d files %d\n", $n, time, scalar(@files);
+    push @files, "$jdir/wjob", @{ $batch->{files} };
     my $manifest = mktmp(manifest => @files);
 
     # Write the archive
     get_status();
-    my $pos = $status{position};
+    my ($filenum, $position) = @status{qw(filenum position)};
     my %fail = map { $_ => 1 } @files;
-    printf $logfh "T %s position %d filenum %d\n", $tape // '?', $pos, $status{filenum};
+    printf $jlogfh "T %s filenum %d position %d\n", $tape // '?', $filenum, $position;
+    printf $jlogfh "B %d begin %d files %d\n", $n, time, scalar(@files);
     open my $fhafio, "afio -o -A -b $block_size -v -B $device < $manifest 2>&1 |"
         or fatal "exec afio: $!";
     while (<$fhafio>) {
         if (/^([0-9]+) (.+) -- okay$/) {
-            printf $logfh "F %d %s\n", $1, $2;
+            printf $jlogfh "F %d %s\n", $1, $2;
             delete $fail{$2};
         }
         else {
-            print $logfh '* ', $_;
+            print $jlogfh '* ', $_;
         }
     }
     unlink $manifest;
     close $fhafio or fatal "afio: $!";
 
     # Log any failed files
-    print $logfh "E $_\n" for sort keys %fail;
+    print $jlogfh "E $_\n" for sort keys %fail;
+
+    # Record in the tape log
+    if (-d "$root/tape/$tape") {
+        my $tlog = "$root/tape/$tape/log";
+        my $tlogfh = xopen('>>', $tlog);
+        my $j = $job->{job};
+        print $tlogfh "$filenum $position $j $n\n";
+    }
 
     # Rename @n ---> wn
     xmove $afile, $wfile if !$dryrun;
-    get_status();
-    printf $logfh "B %d end %d blocks %d errors %d\n", $n, time, $status{position} - $pos, scalar keys %fail;
+    printf $jlogfh "B %d end %d errors %d\n", $n, time, scalar keys %fail;
 }
 
 sub mktmp {
@@ -622,25 +860,21 @@ sub mktmp {
     return $f;
 }
 
-sub jobs_not_in_queue {
+sub jobs {
     my @jobs;
     foreach (glob("$root/job/*/?job")) {
         my @parts = split '/';
         pop @parts;
-        my $job = pop @parts;
-        push @jobs, $job;
+        my $j = pop @parts;
+        push @jobs, $j;
     }
     return @jobs;
 }
 
 sub jobs_in_queue {
-    my @job_statuses = glob("$queue/*/\@*");
     my @jobs;
-    foreach (@job_statuses) {
-        my @parts = split '/';
-        my $status = pop @parts;
-        my $job = pop @parts;
-        push @jobs, $job;
+    foreach my $j (jobs()) {
+        push @jobs, $j if -e "$queue/$j";
     }
     return @jobs;
 }
@@ -654,7 +888,8 @@ sub batches_in_job {
         next if !m{.+/([bwr])([0-9]+)$};
         $batch{$1.$2} = $1 if $want{$1};
     }
-    return wantarray ? keys %batch : \%batch;
+    return \%batch if !wantarray;
+    return sort { substr($a, 1) <=> substr($b, 1) } keys %batch;
 }
 
 sub uuid {
