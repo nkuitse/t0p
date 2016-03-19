@@ -330,8 +330,9 @@ EOS
             push @flags, $_ if $status{$_};
         }
         @flags = ('--') if !@flags;
-        printf <<'EOS', @status{qw(blocksize filenum file_blocknum position)}, join(',',@flags);
+        printf <<'EOS', $tape // '?', @status{qw(blocksize filenum file_blocknum position)}, join(',',@flags);
 online        : yes
+tape          : %s
 block size    : %d
 file number   : %d
 block in file : %d
@@ -616,6 +617,9 @@ sub init_defaults {
     $drive = "$root/drive/$drive" if $drive !~ m{^/};
     $device //= -e "$drive/device" ? "$drive/device" : '/dev/nst0';
     $block_size //= 32768;
+    my @loaded = glob("$drive/tape/\@loaded");
+    fatal "tape: multiple tapes loaded???" if @loaded > 1;
+    $tape = basename(readlink dirname($loaded[0])) if @loaded;
     return if defined $queue && $queue =~ m{^/};
     $queue = defined $queue ? "$drive/queue/$queue" : "$drive/queue";
 }
