@@ -491,6 +491,34 @@ sub prog_read {
     }
 }
 
+sub prog_find {
+    my $long;
+    GetOptions(
+        @common_options,
+        'l|long' => \$long,
+    ) or usage;
+    usage if @ARGV < 2;
+    my $j = shift @ARGV;
+    init_defaults();
+    my $jdir = jdir($j);
+    my $job = read_job("$jdir/wjob");
+    my $log = read_log("$jdir/log");
+    my %file2loc = %{ $log->{files} };
+    my $nf = 0;
+    printf "%-7.7s %7.7s %7.7s %s\n", qw(Tape Filenum Offset File) if $long;
+    foreach my $f (@ARGV) {
+        my $loc = $file2loc{$f}
+            or $nf++, next;
+        if ($long) {
+            printf "%-7.7s %7d %7d %s\n", @$loc, $f;
+        }
+        else {
+            print join(' ', @$loc[0,1], $f), "\n";
+        }
+    }
+    exit $nf ? 2 : 0;
+}
+
 # --- Functions
 
 sub read_block {
@@ -599,6 +627,29 @@ sub size_total {
         $size += -s _;
     }
     return $size;
+}
+
+sub read_log {
+    my $jlogfh = xopen '<', shift;
+    my (%file2loc, %tape, $tp, $fn, %time);
+    while (<$jlogfh>) {
+        if (/^F (\d+) (.+)/) {
+            $file2loc{$2} = [ $tp, $fn, $1 ];
+        }
+        elsif (/^T (\S+) filenum (\d+)/) {
+            $tape{$1} = 1;
+            ($tp, $fn) = ($1, $2);
+        }
+        elsif (/^J (\S+) (begin|end) (\d+)/) {
+            $time{$2} = $3;
+        }
+    }
+    return {
+        begin => $time{begin},
+        end => $time{end},
+        tapes => [ keys %tape ],
+        files => \%file2loc,
+    }
 }
 
 sub usage {
