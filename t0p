@@ -519,7 +519,61 @@ sub prog_find {
     exit $nf ? 2 : 0;
 }
 
+sub prog_tapes {
+    my $long;
+    GetOptions(
+        @common_options,
+        'l|long' => \$long,
+    ) or usage;
+    init_defaults();
+    my @tapes = grep { -d $_ } glob("$root/tape/*");
+    printf "%-6.6s %-7.7s %8.8s %8.8s %6.6s\n", qw(Tape Status Capacity Used Avail%);
+    my %jb2size;
+    foreach my $tp (@tapes) {
+        my $status = substr(basename(glob("$tp/\@*") // '@?'), 1);
+        my $metrics = read_tape_metrics(basename($tp));
+        my ($maxblocks, $blocksize) = @$metrics{qw(maxblocks blocksize)};
+        my $tlogfh = xopen '<', "$tp/log";
+        my ($fnum, $tblk, $j, $b);
+        while (<$tlogfh>) {
+            next if !/^(\d+) (\d+) (\S+) (\d+)/;
+            ($fnum, $tblk, $j, $b) = ($1, $2, $3, $4);
+        }
+        my $jdir = jdir($j);
+        my $jlog = read_log("$jdir/log");
+        my $endpos = $jlog->{'endpos'};
+        my $capacity = size_human($maxblocks, $blocksize);
+        my $used = size_human($endpos, $blocksize);
+        printf "%-6.6s %-7.7s %8.8s %8.8s %6.6s\n", basename($tp), $status, $capacity, $used, sprintf('%.1f%%', 100-($endpos/$maxblocks*100));
+    }
+}
+
 # --- Functions
+
+sub size_human {
+    my ($n, $b) = @_;
+    my @sfx = ('', qw(K M G T P));
+    my $m = 1;
+    while (@_) {
+        $m *= shift;
+        while ($m >= 1024) {
+            $m /= 1024;
+            shift @sfx;
+        }
+    }
+    return sprintf('%.1f%s', $m, $sfx[0]);
+}
+
+sub read_tape_metrics {
+    my ($tp) = @_;
+    my $tmetfh = xopen '<', "$root/tape/$tp/metrics";
+    my %metrics;
+    while (<$tmetfh>) {
+        next if /^\s*(?:#.*)?$/;
+        $metrics{$1} = $2 if /^(\S+)\s+(.+)/;
+    }
+    return \%metrics;
+}
 
 sub read_block {
     my ($fh, $bufref) = @_;
@@ -631,14 +685,14 @@ sub size_total {
 
 sub read_log {
     my $jlogfh = xopen '<', shift;
-    my (%file2loc, %tape, $tp, $fn, %time);
+    my (%file2loc, %tape, $tp, $fn, $pos, %time);
     while (<$jlogfh>) {
         if (/^F (\d+) (.+)/) {
             $file2loc{$2} = [ $tp, $fn, $1 ];
         }
-        elsif (/^T (\S+) filenum (\d+)/) {
+        elsif (/^T (\S+) filenum (\d+)(?: position (\d+))?/) {
             $tape{$1} = 1;
-            ($tp, $fn) = ($1, $2);
+            ($tp, $fn, $pos) = ($1, $2, $3);
         }
         elsif (/^J (\S+) (begin|end) (\d+)/) {
             $time{$2} = $3;
@@ -649,6 +703,7 @@ sub read_log {
         end => $time{end},
         tapes => [ keys %tape ],
         files => \%file2loc,
+        endpos => $pos,
     }
 }
 
@@ -804,6 +859,7 @@ sub procwbatches {
     get_status();
     xchdir $cwd;
     printf $jlogfh "J %s end %d\n", $j, time;
+    printf $jlogfh "T %s filenum %d position %d\n", $tape // '?', @status{qw(filenum position)};
 }
 
 sub unique {
