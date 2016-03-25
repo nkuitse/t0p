@@ -527,7 +527,7 @@ sub prog_tapes {
     ) or usage;
     init_defaults();
     my @tapes = grep { -d $_ } glob("$root/tape/*");
-    printf "%-6.6s %-7.7s %8.8s %8.8s %6.6s\n", qw(Tape Status Capacity Used Avail%);
+    printf "%-6.6s %-7.7s %8.8s %8.8s %7.7s %6.6s\n", qw(Tape Status Capacity Used Files Avail%);
     my %jb2size;
     foreach my $tp (@tapes) {
         my $status = substr(basename(glob("$tp/\@*") // '@?'), 1);
@@ -544,7 +544,7 @@ sub prog_tapes {
         my $endpos = $jlog->{'endpos'};
         my $capacity = size_human($maxblocks, $blocksize);
         my $used = size_human($endpos, $blocksize);
-        printf "%-6.6s %-7.7s %8.8s %8.8s %6.6s\n", basename($tp), $status, $capacity, $used, sprintf('%.1f%%', 100-($endpos/$maxblocks*100));
+        printf "%-6.6s %-7.7s %8.8s %8.8s %7d %6.6s\n", basename($tp), $status, $capacity, $used, $fnum, sprintf('%.1f%%', 100-($endpos/$maxblocks*100));
     }
 }
 
