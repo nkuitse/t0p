@@ -149,22 +149,33 @@ EOS
         print $bfh $_, "\n" for '', '%files', @files, '';
     }
     elsif ($list) {
-        my @j = jobs();
+        my (%jdir, %job, %ctime);
+        my @j = sort {
+            my $ja = $job{$a} //= read_job( $jdir{$a} //= jdir($a) );
+            my $jb = $job{$b} //= read_job( $jdir{$b} //= jdir($b) );
+            ( $ctime{$a} //= strftime '%Y-%m-%d %H:%M:%S', localtime $ja->{created} )
+                cmp
+            ( $ctime{$b} //= strftime '%Y-%m-%d %H:%M:%S', localtime $jb->{created} )
+        } jobs();
         foreach my $j (@j) {
-            my $jdir = jdir($j);
+            my $jdir = $jdir{$j};
             my $status = substr(basename(glob("$jdir/\@*")), 1);
             my $type   = substr(basename(glob("$jdir/?job")), 0, 1);
-            if ($status eq 'busy') {
-                printf "* %s %s\n", $type, $j;
-            }
-            if ($status eq 'ready') {
-                printf "r %s %s\n", $type, $j;
-            }
-            elsif ($status eq 'done') {
+            if ($status eq 'done') {
                 printf "x %s %s\n", $type, $j if $verbose;
             }
             else {
-                printf "n %s %s\n", $type, $j;
+                my $job = read_job("${jdir}/${type}job");
+                my $root = $job->{root} // '?';
+                if ($status eq 'busy') {
+                    printf "* %s %s %s %s\n", $type, $j, $ctime{$j}, $root;
+                }
+                elsif ($status eq 'ready') {
+                    printf "r %s %s %s %s\n", $type, $j, $ctime{$j}, $root;
+                }
+                else {
+                    printf "n %s %s %s %s\n", $type, $j, $ctime{$j}, $root;
+                }
             }
         }
     }
@@ -646,6 +657,8 @@ sub xunlink {
 
 sub read_job {
     my ($jfile) = @_;
+    ($jfile) = glob("$jfile/?job") if $jfile !~ /job$/;
+    fatal "read job: @_" if !defined $jfile;
     my $jfh = xopen '<', $jfile;
     my %job = ( file => $jfile, dir => dirname($jfile) );
 LOOP:
