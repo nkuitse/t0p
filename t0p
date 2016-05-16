@@ -503,29 +503,60 @@ sub prog_read {
 }
 
 sub prog_find {
-    my $long;
+    my ($long, $all, $regexp);
     GetOptions(
         @common_options,
         'l|long' => \$long,
+        'a|all-jobs' => \$all,
+        'm|match=s' => \$regexp,
     ) or usage;
-    usage if @ARGV < 2;
-    my $j = shift @ARGV;
     init_defaults();
-    my $jdir = jdir($j);
-    my $job = read_job("$jdir/wjob");
-    my $log = read_log("$jdir/log");
-    my %file2loc = %{ $log->{files} };
-    my $nf = 0;
-    printf "%-7.7s %7.7s %7.7s %s\n", qw(Tape Filenum Offset File) if $long;
-    foreach my $f (@ARGV) {
-        my $loc = $file2loc{$f}
-            or $nf++, next;
-        if ($long) {
-            printf "%-7.7s %7d %7d %s\n", @$loc, $f;
+    my (@j, $filter);
+    if (defined $regexp) {
+        # t0find -m REGEXP [-a | JOB...]
+        my $rx = qr/$regexp/;
+        if ($all) {
+            usage if @ARGV;
+            @j = jobs();
         }
         else {
-            print join(' ', @$loc[0,1], $f), "\n";
+            usage if !@ARGV;
+            @j = @ARGV;
         }
+        $filter = sub { $_ =~ $rx };
+    }
+    else {
+        # t0find [-a | JOB] FILE...
+        if ($all) {
+            usage if @ARGV < 1;
+            @j = jobs();
+        }
+        else {
+            usage if @ARGV < 2;
+            @j = shift @ARGV;
+        }
+        my %want = map { $_ => 1 } @ARGV;
+        $filter = sub { $want{$_} };
+    }
+    printf "%-7.7s %7.7s %7.7s %s\n", qw(Tape Filenum Offset File) if $long;
+    my $nf = 0;
+    foreach my $j (@j) {
+        my $jdir = jdir($j);
+        my $job = eval { read_job("$jdir/wjob") };
+        next if !defined $job;
+        my $log = read_log("$jdir/log");
+        my $file2loc = $log->{files};
+        my @files = grep { $filter->() } keys %$file2loc;
+        foreach my $f (@files) {
+            my $loc = $file2loc->{$f};
+            if ($long) {
+                printf "%-7.7s %7d %7d %s\n", @$loc, $f;
+            }
+            else {
+                print join(' ', @$loc[0,1], $f), "\n";
+            }
+        }
+        $nf += scalar @files;
     }
     exit $nf ? 2 : 0;
 }
@@ -541,25 +572,100 @@ sub prog_tapes {
     printf "%-6.6s %-7.7s %8.8s %8.8s %7.7s %6.6s\n", qw(Tape Status Capacity Used Files Avail%);
     my %jb2size;
     foreach my $tp (@tapes) {
-        my $status = substr(basename(glob("$tp/\@*") // '@?'), 1);
+        my @status_files = glob("$tp/\@*");
+        fatal "multiple statuses: $tp" if @status_files > 1;
+        my $status = @status_files ? substr(basename($status_files[0]), 1) : '?';
         my $metrics = read_tape_metrics(basename($tp));
         my ($maxblocks, $blocksize) = @$metrics{qw(maxblocks blocksize)};
+        my $capacity = size_human($maxblocks, $blocksize);
         my $tlogfh = xopen '<', "$tp/log";
-        my ($fnum, $tblk, $j, $b);
+        my ($tblk, $j, $b);
+        my ($fnum, $endpos, $used) = (0, 0, 0);
         while (<$tlogfh>) {
             next if !/^(\d+) (\d+) (\S+) (\d+)/;
             ($fnum, $tblk, $j, $b) = ($1, $2, $3, $4);
         }
-        my $jdir = jdir($j);
-        my $jlog = read_log("$jdir/log");
-        my $endpos = $jlog->{'endpos'};
-        my $capacity = size_human($maxblocks, $blocksize);
-        my $used = size_human($endpos, $blocksize);
+        if (defined $j) {
+            my $jdir = jdir($j);
+            my $jlog = read_log("$jdir/log");
+            $endpos = $jlog->{'endpos'};
+            $used = size_human($endpos, $blocksize);
+        }
         printf "%-6.6s %-7.7s %8.8s %8.8s %7d %6.6s\n", basename($tp), $status, $capacity, $used, $fnum, sprintf('%.1f%%', 100-($endpos/$maxblocks*100));
     }
 }
 
+sub prog_eject {
+    # Eject a tape
+    init_defaults();
+    if (defined $tape) {
+        close mt('unlock') or fatal "unlock: $!";
+        close mt('eject')  or fatal "eject $!";
+        xmove "$drive/tape/\@loaded", "$drive/tape/\@offline";
+        xunlink "$drive/tape" if -e "$drive/tape";
+    }
+}
+
+sub prog_load {
+    # Load a tape
+    init_defaults();
+    fatal "Tape $tape is already loaded" if defined $tape;
+    system(qw(tput civis));
+    print STDERR "** Insert a tape and press ENTER **";
+    scalar <STDIN>;
+    system(qw(tput cnorm));
+    close mt('load')   or fatal "load $!";
+    close mt('lock')   or fatal "lock $!";
+    close mt('rewind') or fatal "rewind: $!";
+    # Figure out which tape we've got
+    read_label();
+    if (!defined $label{label}) {
+        print STDERR "This tape has not been labeled\n";
+        fatal "cancelled" if !askbool('Label the tape?', 1);
+        while (1) {
+            $tape = ask('Enter a tape label (e.g., P6):');
+            last if ! -e "$root/tape/$tape";
+            print STDERR "That label is already in use\n";
+        }
+        %label = ( label => $tape );
+        write_label();
+    }
+    xmove "$root/tape/$tape/\@offline", "$root/tape/$tape/\@loaded";
+    unlink "$drive/tape" if -e "$drive/tape";
+    xsymlink "../../tape/$tape", "$drive/tape";
+}
+
 # --- Functions
+
+sub askbool {
+    -t STDIN || fatal "Interaction required but no TTY is available";
+    my ($prompt, $yes_default) = @_;
+    $prompt .= $yes_default ? " [Yn]" : " [yN]";
+    print STDERR $prompt, ' ';
+    my $answer = <STDIN>;
+    while (!defined $answer || !length $answer) {
+        return 1 if $yes_default;
+        print STDERR $prompt, ' ';
+        $answer = <STDIN>;
+    }
+    return 1 if $yes_default && $answer !~ /^[Nn]/;
+    return $answer =~ /^[Yy]/;
+}
+
+sub ask {
+    -t STDIN || fatal "Interaction required but no TTY is available";
+    my ($prompt, $default) = @_;
+    $prompt .= " [$default]" if defined $default;
+    print STDERR $prompt, ' ';
+    my $answer = <STDIN>;
+    while (!defined $answer || !length $answer) {
+        return $default if defined $default;
+        print STDERR $prompt, ' ';
+        $answer = <STDIN>;
+    }
+    chomp $answer;
+    return $answer;
+}
 
 sub size_human {
     my ($n, $b) = @_;
@@ -608,6 +714,10 @@ sub xopen {
     my ($mode, $file) = @_;
     open my $fh, $mode, $file or fatal "open $mode $file: $!";
     return $fh;
+}
+
+sub xclose {
+    close(shift) or fatal "close: $!";
 }
 
 sub xcat {
@@ -722,7 +832,7 @@ sub read_log {
 
 sub usage {
     print STDERR "usage: $prog $_\n" if @_;
-    print STDERR "usage: $prog [OPTION...] [ARG...]}}\n" if !@_;
+    print STDERR "usage: $prog [OPTION...] [ARG...]\n" if !@_;
     exit 1;
 }
 
@@ -736,7 +846,7 @@ sub init_defaults {
     $drive = "$root/drive/$drive" if $drive !~ m{^/};
     $device //= -e "$drive/device" ? "$drive/device" : '/dev/nst0';
     $block_size //= 32768;
-    my @loaded = glob("$drive/tape/\@loaded");
+    my @loaded = grep { -d $_ } glob("$drive/tape/\@loaded");
     fatal "tape: multiple tapes loaded???" if @loaded > 1;
     $tape = basename(readlink dirname($loaded[0])) if @loaded;
     return if defined $queue && $queue =~ m{^/};
@@ -807,14 +917,14 @@ sub read_label {
 }
 
 sub write_label {
-    my $label = $label{label};
+    $tape = $label{label};
     my $fh;
     if (!$dryrun) {
         mt('rewind') or fatal "rewind: $!";
         $fh = xopen '>', $device;
     }
     my $buf = "\x00" x $block_size;
-    my $str = sprintf("t0version:%d\nlabel:%s\ncreated:%s\n", T0VERSION, $label, time);
+    my $str = sprintf("t0version:%d\nlabel:%s\ncreated:%s\n", T0VERSION, $tape, time);
     foreach (sort keys %label) {
         next if /^(label|t0version)$/;
         $str .= sprintf("%s:%s\n", $_, $label{$_});
@@ -830,8 +940,11 @@ sub write_label {
         syswrite($fh, $buf) or fatal "write: $!";
         xclose $fh;
         mt('weof') or fatal "weof: $!";
+        xmkdir "$root/tape/$tape" if ! -e "$root/tape/$tape";
+        $fh = xopen '>', "$root/tape/$tape/label";
+        print $fh $str;
         return if !$verbose;
-        print STDERR "label written: $label (hash $hash)\n";
+        print STDERR "label written: $tape (hash $hash)\n";
     }
 }
 
