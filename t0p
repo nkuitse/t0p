@@ -627,6 +627,11 @@ sub prog_load {
             last if ! -e "$root/tape/$tape";
             print STDERR "That label is already in use\n";
         }
+        my %metrics = (
+            blocksize => ask('Block size:', 32768),
+            maxblocks => ask('Block count:', 76293945),  # LTO-6
+        );
+        write_tape_metrics($tape, %metrics);
         %label = ( label => $tape );
         write_label();
     }
@@ -690,6 +695,14 @@ sub read_tape_metrics {
         $metrics{$1} = $2 if /^(\S+)\s+(.+)/;
     }
     return \%metrics;
+}
+
+sub write_tape_metrics {
+    my ($tp, %metrics) = @_;
+    my $tmetfh = xopen '>', "$root/tape/$tp/metrics";
+    foreach my $k (sort keys %metrics) {
+        print $tmetfh "$k $metrics{$k}\n";
+    }
 }
 
 sub read_block {
