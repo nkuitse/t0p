@@ -74,14 +74,15 @@ sub prog_queue {
         print $_, "\n" for @jobs;
     }
     elsif ($add) {
-        usage '-a [-q QUEUE] [-s] JOB' if !@ARGV;
-        my $j = shift @ARGV;
-        my $jdir = jdir($j);
-        fatal "no such job: $j" if !-d $jdir;
-        my @b = batches_in_job($jdir, 'b');
-        fatal "no unprocessed batches in job $j" if !@b;
-        xmkdir "$jdir/\@ready";
-        xsymlink $jdir, "$queue/$j";
+        usage '-a [-q QUEUE] JOB...' if !@ARGV;
+        foreach my $j (@ARGV) {
+            my $jdir = jdir($j);
+            fatal "no such job: $j" if !-d $jdir;
+            my @b = batches_in_job($jdir, 'b');
+            fatal "no unprocessed batches in job $j" if !@b;
+            xmkdir "$jdir/\@ready";
+            xsymlink $jdir, "$queue/$j";
+        }
     }
     elsif ($create) {
         usage '-c -q QUEUE' if !@ARGV;
