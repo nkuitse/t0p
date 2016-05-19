@@ -410,8 +410,11 @@ sub prog_seek {
         @common_options,
         'e' => \$eod,
     );
+    if ($eod) {
+        usage if @ARGV;
+        return mt('eod');
+    }
     usage if @ARGV < 1 || @ARGV > 2;
-    usage if $eod && @ARGV;
     ($filenum, $file_blocknum) = @ARGV;
     $file_blocknum = 0 if !defined $file_blocknum;
     $filenum = '+0' if $filenum eq '.';
@@ -421,12 +424,7 @@ sub prog_seek {
     $filenum += $status{filenum} if $filenum =~ /^[-+]/;
     $file_blocknum += $status{file_blocknum} if $file_blocknum =~ /^[-+]/;
     # Go to the desired file
-    if ($eod) {
-        usage if defined($filenum) || defined($file_blocknum);
-        mt('eod');
-        return;
-    }
-    elsif ($filenum > $status{filenum}) {
+    if ($filenum > $status{filenum}) {
         mt('fsf', $filenum - $status{filenum});
     }
     elsif ($filenum == $status{filenum}) {
