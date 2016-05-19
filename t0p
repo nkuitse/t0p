@@ -615,8 +615,26 @@ sub prog_eject {
 
 sub prog_load {
     # Load a tape
+    my $eject;
+    GetOptions(
+        @common_options,
+        'e|eject' => \$eject,
+    ) or usage;
     init_defaults();
-    fatal "Tape $tape is already loaded" if defined $tape;
+    usage if @ARGV > 1;
+    my $newtape;
+    if (@ARGV) {
+        my ($newtape) = @ARGV;
+        if (defined $tape) {
+            return if $newtape eq $tape;
+            fatal "Tape $tape is already loaded" if !$eject;
+            close mt('eject') or fatal "eject $!";
+        }
+    }
+    if (defined $tape) {
+        fatal "Tape $tape is loaded" if !$eject;
+        close mt('eject') or fatal "eject $!";
+    }
     system(qw(tput civis));
     print STDERR "** Insert a tape and press ENTER **";
     scalar <STDIN>;
@@ -630,7 +648,7 @@ sub prog_load {
         print STDERR "This tape has not been labeled\n";
         fatal "cancelled" if !askbool('Label the tape?', 1);
         while (1) {
-            $tape = ask('Enter a tape label (e.g., P6):');
+            $tape = ask('Enter a tape label (e.g., P6):', $newtape);
             last if ! -e "$root/tape/$tape";
             print STDERR "That label is already in use\n";
         }
@@ -643,6 +661,9 @@ sub prog_load {
         write_tape_metrics($tape, %metrics);
         %label = ( label => $tape );
         write_label();
+    }
+    elsif (defined $newtape) {
+        fatal "That is not $newtape" if $tape ne $newtape;
     }
     xmove "$root/tape/$tape/\@offline", "$root/tape/$tape/\@loaded";
     unlink "$drive/tape" if -e "$drive/tape";
