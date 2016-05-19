@@ -50,6 +50,7 @@ my @common_options = (
 my $ok = eval {
     (my $cmd = $prog) =~ s/^t0// or usage;
     &{ __PACKAGE__->can('prog_'.$cmd) || usage };
+    1;
 };
 if (!$ok) {
     exit 2;
