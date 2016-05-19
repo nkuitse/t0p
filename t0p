@@ -605,12 +605,8 @@ sub prog_tapes {
 sub prog_eject {
     # Eject a tape
     init_defaults();
-    if (defined $tape) {
-        close mt('unlock') or fatal "unlock: $!";
-        close mt('eject')  or fatal "eject $!";
-        xmove "$drive/tape/\@loaded", "$drive/tape/\@offline";
-        xunlink "$drive/tape" if -e "$drive/tape";
-    }
+    fatal "No tape is loaded" if !defined $tape;
+    eject_tape();
 }
 
 sub prog_load {
@@ -624,31 +620,29 @@ sub prog_load {
     usage if @ARGV > 1;
     my $newtape;
     if (@ARGV) {
-        my ($newtape) = @ARGV;
+        ($newtape) = @ARGV;
         if (defined $tape) {
             return if $newtape eq $tape;
-            fatal "Tape $tape is already loaded" if !$eject;
-            close mt('eject') or fatal "eject $!";
+            fatal "Tape $tape is loaded" if !$eject;
         }
     }
     if (defined $tape) {
         fatal "Tape $tape is loaded" if !$eject;
-        close mt('eject') or fatal "eject $!";
+        eject_tape();
     }
     system(qw(tput civis));
-    print STDERR "** Insert a tape and press ENTER **";
+    print STDERR "** Insert tape and press ENTER **";
     scalar <STDIN>;
     system(qw(tput cnorm));
-    close mt('load')   or fatal "load $!";
-    close mt('lock')   or fatal "lock $!";
-    close mt('rewind') or fatal "rewind: $!";
+    close mt('load') or fatal "load $!";
+    close mt('lock') or fatal "lock $!";
     # Figure out which tape we've got
     eval { read_label() };
     if (!defined $label{label}) {
         print STDERR "This tape has not been labeled\n";
         fatal "cancelled" if !askbool('Label the tape?', 1);
         while (1) {
-            $tape = ask('Enter a tape label (e.g., P6):', $newtape);
+            $tape = ask('Enter a tape code:', $newtape);
             last if ! -e "$root/tape/$tape";
             print STDERR "That label is already in use\n";
         }
@@ -656,11 +650,7 @@ sub prog_load {
             blocksize => ask('Block size:', 32768),
             maxblocks => ask('Block count:', 76293945),  # LTO-6
         );
-        xmkdir "$root/tape/$tape", "$root/tape/$tape/\@offline",;
-        xopen '>', "$root/tape/$tape/log";
-        write_tape_metrics($tape, %metrics);
-        %label = ( label => $tape );
-        write_label();
+        init_tape(metrics => \%metrics);
     }
     elsif (defined $newtape) {
         fatal "That is not $newtape" if $tape ne $newtape;
@@ -671,6 +661,28 @@ sub prog_load {
 }
 
 # --- Functions
+
+sub init_tape {
+    my %meta = @_;
+    my $metrics = $meta{metrics};
+    xmkdir "$root/tape/$tape", "$root/tape/$tape/\@offline",;
+    xopen '>', "$root/tape/$tape/log";
+    write_tape_metrics($tape, %$metrics);
+    %label = ( label => $tape );
+    write_label();
+}
+
+sub eject_tape {
+    close mt('unlock') or fatal "unlock: $!";
+    close mt('eject')  or fatal "eject $!";
+    if (-e "$drive/tape") {
+        xmove "$drive/tape/\@loaded", "$drive/tape/\@offline";
+        xunlink "$drive/tape";
+    }
+    elsif (-e "$root/tape/$tape/\@loaded") {
+        xmove "$root/tape/$tape/\@loaded", "$root/tape/$tape/\@offline";
+    }
+}
 
 sub askbool {
     -t STDIN || fatal "Interaction required but no TTY is available";
