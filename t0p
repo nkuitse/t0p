@@ -47,8 +47,13 @@ my @common_options = (
     'n'   => \$dryrun,
 );
 
-(my $cmd = $prog) =~ s/^t0// or fatal "bizarre invocation: $prog";
-&{ __PACKAGE__->can('prog_'.$cmd) || fatal "unrecognized command: $cmd" };
+my $ok = eval {
+    (my $cmd = $prog) =~ s/^t0// or usage;
+    &{ __PACKAGE__->can('prog_'.$cmd) || usage };
+};
+if (!$ok) {
+    exit 2;
+}
 
 # Subprograms
 
@@ -618,7 +623,7 @@ sub prog_load {
     close mt('lock')   or fatal "lock $!";
     close mt('rewind') or fatal "rewind: $!";
     # Figure out which tape we've got
-    read_label();
+    eval { read_label() };
     if (!defined $label{label}) {
         print STDERR "This tape has not been labeled\n";
         fatal "cancelled" if !askbool('Label the tape?', 1);
@@ -631,6 +636,8 @@ sub prog_load {
             blocksize => ask('Block size:', 32768),
             maxblocks => ask('Block count:', 76293945),  # LTO-6
         );
+        xmkdir "$root/tape/$tape", "$root/tape/$tape/\@offline",;
+        xopen '>', "$root/tape/$tape/log";
         write_tape_metrics($tape, %metrics);
         %label = ( label => $tape );
         write_label();
@@ -663,6 +670,7 @@ sub ask {
     $prompt .= " [$default]" if defined $default;
     print STDERR $prompt, ' ';
     my $answer = <STDIN>;
+    chomp $answer if defined $answer;
     while (!defined $answer || !length $answer) {
         return $default if defined $default;
         print STDERR $prompt, ' ';
@@ -851,7 +859,7 @@ sub usage {
 
 sub fatal {
     print STDERR "$prog: ", $_, "\n" for @_;
-    exit 2;
+    die;
 }
 
 sub init_defaults {
