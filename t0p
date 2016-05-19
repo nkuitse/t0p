@@ -412,6 +412,7 @@ sub prog_seek {
     );
     if ($eod) {
         usage if @ARGV;
+        init_defaults();
         return mt('eod');
     }
     usage if @ARGV < 1 || @ARGV > 2;
