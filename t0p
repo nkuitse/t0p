@@ -12,6 +12,7 @@ use Getopt::Long
     qw(:config posix_default gnu_compat bundling no_ignore_case);
 
 use constant T0VERSION => 1;
+use constant DEFBLKSIZE => 32768;
 
 sub usage;
 sub fatal;
@@ -635,6 +636,7 @@ sub prog_load {
     system(qw(tput cnorm));
     close mt('load') or fatal "load $!";
     close mt('lock') or fatal "lock $!";
+    close mt('setblk', $block_size) or fatal "setblk $!";
     # Figure out which tape we've got
     eval { read_label() };
     if (!defined $label{label}) {
@@ -646,7 +648,7 @@ sub prog_load {
             print STDERR "That label is already in use\n";
         }
         my %metrics = (
-            blocksize => ask('Block size:', 32768),
+            blocksize => ask('Block size:', DEFBLKSIZE),
             maxblocks => ask('Block count:', 76293945),  # LTO-6
         );
         init_tape(metrics => \%metrics);
@@ -900,7 +902,7 @@ sub init_defaults {
     $drive //= readlink("$root/drive/default");
     $drive = "$root/drive/$drive" if $drive !~ m{^/};
     $device //= -e "$drive/device" ? "$drive/device" : '/dev/nst0';
-    $block_size //= 32768;
+    $block_size //= DEFBLKSIZE;
     my @loaded = grep { -d $_ } glob("$drive/tape/\@loaded");
     fatal "tape: multiple tapes loaded???" if @loaded > 1;
     $tape = basename(readlink dirname($loaded[0])) if @loaded;
