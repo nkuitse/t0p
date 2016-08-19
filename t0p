@@ -167,7 +167,7 @@ EOS
         } jobs();
         foreach my $j (@j) {
             my $jdir = $jdir{$j};
-            my $status = substr(basename(glob("$jdir/\@*")), 1);
+            my $status = substr(basename(glob("$jdir/\@[a-z]*")), 1);
             my $type   = substr(basename(glob("$jdir/?job")), 0, 1);
             if ($status eq 'done') {
                 printf "x %s %s\n", $type, $j if $verbose;
