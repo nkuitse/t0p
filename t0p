@@ -38,6 +38,7 @@ my $root = $ENV{'T0P_ROOT'} ||= '/var/local/t0p';
 my ($drive, $tape, $device, $queue, $block_size, $verbose, $dryrun);
 my (%props);
 my (%label, %status);
+my %type2human = qw(w write r read);
 my @tmp;  # Anything that should be deleted when we exit
 my @common_options = (
     'd=s' => \$drive,
@@ -168,23 +169,11 @@ EOS
         foreach my $j (@j) {
             my $jdir = $jdir{$j};
             my $status = substr(basename(glob("$jdir/\@[a-z]*")), 1);
+            next if $status eq 'done' && !$verbose;
             my $type   = substr(basename(glob("$jdir/?job")), 0, 1);
-            if ($status eq 'done') {
-                printf "x %s %s\n", $type, $j if $verbose;
-            }
-            else {
-                my $job = read_job("${jdir}/${type}job");
-                my $root = $job->{root} // '?';
-                if ($status eq 'busy') {
-                    printf "* %s %s %s %s\n", $type, $j, $ctime{$j}, $root;
-                }
-                elsif ($status eq 'ready') {
-                    printf "r %s %s %s %s\n", $type, $j, $ctime{$j}, $root;
-                }
-                else {
-                    printf "n %s %s %s %s\n", $type, $j, $ctime{$j}, $root;
-                }
-            }
+            my $job = read_job("${jdir}/${type}job");
+            my $root = $job->{root} // '?';
+            printf "%-5.5s %5.5s %s %s %s\n", $status, $type2human{$type}, $j, $ctime{$j}, $root;
         }
     }
 }
