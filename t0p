@@ -191,10 +191,18 @@ EOS
         write_job($jfile, {
             %$oldjob,
             job => $j,
+            dir => $jdir,
+            file => $jfile,
             cloned => time,
-            cloned_from => $clone_from,
+            'cloned-from' => $clone_from,
         });
-        set_status($oldjdir, 'cloning' => 'done');
+        my @batches = glob("$oldjdir/w[0-9]*");
+        foreach my $f (@batches) {
+            (my $name = basename($f)) =~ s/^w/b/;
+            xcopy($f, "$jdir/$name");
+        }
+        set_status($oldjdir, 'cloning' => 'cloned');
+        print $j, "\n";
     }
     elsif ($revoke_receipt) {
         my $jdir = "$root/job/$revoke_receipt";
