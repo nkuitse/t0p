@@ -93,13 +93,15 @@ sub prog_queue {
 }
 
 sub prog_job {
-    my ($add, $create, $list, %prop);
+    my ($add, $create, $list, $clone_from, $revoke_receipt, %prop);
     my $type = 'w';
     GetOptions(
         @common_options,
         'a' => \$add,
         'c' => \$create,
         'l' => \$list,
+        'clone=s' => \$clone_from,
+        'revoke=s' => \$revoke_receipt,
         'r' => sub { $type = 'r' },
         'p=s' => sub {
             usage if $_[1] !~ /^([^=]+)=(.*)$/;
@@ -168,7 +170,7 @@ EOS
         } jobs();
         foreach my $j (@j) {
             my $jdir = $jdir{$j};
-            my $status = substr(basename(glob("$jdir/\@[a-z]*")), 1);
+            my $status = status($jdir);
             next if $status eq 'done' && !$verbose;
             my $type   = substr(basename(glob("$jdir/?job")), 0, 1);
             my $job = read_job("${jdir}/${type}job");
@@ -176,6 +178,47 @@ EOS
             printf "%-5.5s %5.5s %s %s %s\n", $status, $type2human{$type}, $j, $ctime{$j}, $root;
         }
     }
+    elsif ($clone_from) {
+        my $oldjdir = "$root/job/$clone_from";
+        my $oldstatus = status($oldjdir);
+        $oldstatus eq 'done' || fatal "job: can't clone $clone_from: not done";
+        set_status($oldjdir, 'done' => 'cloning');
+        my $oldjob = read_job("${oldjdir}/${type}job");
+        my $j = uuid();
+        my $jdir = "$root/job/$j";
+        xmkdir $jdir;
+        my $jfile = "$jdir/${type}job";
+        write_job($jfile, {
+            %$oldjob,
+            job => $j,
+            cloned => time,
+            cloned_from => $clone_from,
+        });
+        set_status($oldjdir, 'cloning' => 'done');
+    }
+    elsif ($revoke_receipt) {
+        my $jdir = "$root/job/$revoke_receipt";
+        my $type = substr(basename(glob("$jdir/?job")), 0, 1);
+        my $job = read_job("${jdir}/${type}job");
+        if (-e $job->{receipt}) {
+            set_status($jdir, 'revoked');
+            xcopy $job->{receipt}, "$jdir/\@revoked";
+        }
+    }
+}
+
+sub set_status {
+    my ($dir, $from, $to) = @_;
+    $from = status($dir) if $from eq '*';
+    xmove "$dir/\@$from", "$dir/\@$to";
+}
+
+sub status {
+    my ($dir) = @_;
+    my @stat = glob("$dir/\@*");
+    return 'unknown' if !@stat;
+    return 'multiple' if @stat > 1;
+    return substr(basename($stat[0]), 1);
 }
 
 sub prog_label {
@@ -284,8 +327,8 @@ sub prog_write {
         exit 0;
     }
     if (!$dryrun) {
-        xmove "$drive/tape/\@loaded", "$drive/tape/\@busy";
-        xmove "$drive/\@idle", "$drive/\@busy";
+        set_status("$drive/tape", 'loaded' => 'busy');
+        set_status($drive, 'idle' => 'busy');
         read_label("$drive/tape/\@busy/../label")
             if -e "$drive/tape/\@busy/../label";
     }
@@ -297,12 +340,12 @@ sub prog_write {
         my $job = read_job("$jdir/wjob");
         my $job_receipt = $receipt // $job->{receipt};
         if (!$dryrun) {
-            xmove "$jdir/\@ready", "$jdir/\@busy";
+            set_status($jdir, 'ready' => 'busy');
             read_label() if !%label;
         }
         procwbatches($job, @b);
         if (!$dryrun) {
-            xmove "$jdir/\@busy", "$jdir/\@done";
+            set_status($jdir, 'busy' => 'done');
             xunlink $jlink;
             if (defined $job_receipt) {
                 xcat(
@@ -316,8 +359,8 @@ sub prog_write {
         }
     }
     if (!$dryrun) {
-        xmove "$drive/tape/\@busy", "$drive/tape/\@loaded";
-        xmove "$drive/\@busy", "$drive/\@idle";
+        set_status("$drive/tape", 'busy' => 'loaded');
+        set_status($drive, 'busy' => 'idle');
     }
 }
 
@@ -577,9 +620,8 @@ sub prog_tapes {
     printf "%-6.6s %-7.7s %8.8s %8.8s %7.7s %6.6s\n", qw(Tape Status Capacity Used Files Avail%);
     my %jb2size;
     foreach my $tp (@tapes) {
-        my @status_files = glob("$tp/\@*");
-        fatal "multiple statuses: $tp" if @status_files > 1;
-        my $status = @status_files ? substr(basename($status_files[0]), 1) : '?';
+        my $status = status($tp);
+        fatal "multiple statuses: $tp" if $status eq 'multiple';
         my $metrics = read_tape_metrics(basename($tp));
         my ($maxblocks, $blocksize) = @$metrics{qw(maxblocks blocksize)};
         my $capacity = size_human($maxblocks, $blocksize);
@@ -654,7 +696,7 @@ sub prog_load {
     elsif (defined $newtape) {
         fatal "That is not $newtape" if $tape ne $newtape;
     }
-    xmove "$root/tape/$tape/\@offline", "$root/tape/$tape/\@loaded";
+    set_status("$root/tape/$tape", 'offline' => 'loaded');
     unlink "$drive/tape" if -e "$drive/tape";
     xsymlink "../../tape/$tape", "$drive/tape";
 }
@@ -675,11 +717,11 @@ sub eject_tape {
     close mt('unlock') or fatal "unlock: $!";
     close mt('eject')  or fatal "eject $!";
     if (-e "$drive/tape") {
-        xmove "$drive/tape/\@loaded", "$drive/tape/\@offline";
+        set_status("$drive/tape", 'loaded' => 'offline');
         xunlink "$drive/tape";
     }
-    elsif (-e "$root/tape/$tape/\@loaded") {
-        xmove "$root/tape/$tape/\@loaded", "$root/tape/$tape/\@offline";
+    elsif (status("$root/tape/$tape") eq 'loaded') {
+        set_status("$root/tape/$tape", 'loaded' => 'offline');
     }
 }
 
