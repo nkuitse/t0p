@@ -491,6 +491,15 @@ sub prog_read {
     }
 }
 
+sub prog_reset {
+    GetOptions(
+        @common_options,
+    ) or usage;
+    init_defaults();
+    mt('setblk', $block_size);
+    mt('eod');
+}
+
 # --- Functions
 
 sub read_block {
