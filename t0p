@@ -168,14 +168,15 @@ EOS
             $ctime{$j} = strftime '%Y-%m-%d %H:%M:%S', localtime $job->{created};
         }
         @j = sort { $ctime{$a} cmp $ctime{$b} } @j if !@ARGV;
+        my %skip = $verbose ? () : qw(done 1 revoked 1);
         foreach my $j (@j) {
             my $jdir = $jdir{$j};
             my $status = status($jdir);
-            next if $status eq 'done' && !$verbose;
-            my $type   = substr(basename(glob("$jdir/?job")), 0, 1);
+            next if $skip{$status};
+            my $type = substr(basename(glob("$jdir/?job")), 0, 1);
             my $job = read_job("${jdir}/${type}job");
             my $root = $job->{root} // '?';
-            printf "%-5.5s %5.5s %s %s %s\n", $status, $type2human{$type}, $j, $ctime{$j}, $root;
+            printf "%-7.7s %5.5s %s %s %s\n", $status, $type2human{$type}, $j, $ctime{$j}, $root;
         }
     }
     elsif ($clone_from) {
