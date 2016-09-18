@@ -195,8 +195,8 @@ EOS
             'cloned-from' => $clone_from,
         }, @batches);
         foreach my $batch (@batches) {
-            my $name = $batch->{name};
-            xcopy("$oldjdir/$name", "$jdir/$name");
+            my $number = $batch->{number};
+            xcopy("$oldjdir/${type}$number", "$jdir/b$number");
         }
         set_status($oldjdir, 'cloning' => 'cloned');
         print $j, "\n";
