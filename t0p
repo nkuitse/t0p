@@ -183,7 +183,7 @@ EOS
         my $oldstatus = status($oldjdir);
         $oldstatus eq 'done' || fatal "job: can't clone $clone_from: not done";
         set_status($oldjdir, 'done' => 'cloning');
-        my $oldjob = read_job("${oldjdir}/${type}job");
+        my ($oldjob, @batches) = read_job("${oldjdir}/${type}job");
         my $j = uuid();
         my $jdir = "$root/job/$j";
         xmkdir $jdir;
@@ -191,15 +191,12 @@ EOS
         write_job($jfile, {
             %$oldjob,
             job => $j,
-            dir => $jdir,
-            file => $jfile,
             cloned => time,
             'cloned-from' => $clone_from,
-        });
-        my @batches = glob("$oldjdir/w[0-9]*");
-        foreach my $f (@batches) {
-            (my $name = basename($f)) =~ s/^w/b/;
-            xcopy($f, "$jdir/$name");
+        }, @batches);
+        foreach my $batch (@batches) {
+            my $name = $batch->{name};
+            xcopy("$oldjdir/$name", "$jdir/$name");
         }
         set_status($oldjdir, 'cloning' => 'cloned');
         print $j, "\n";
@@ -875,23 +872,38 @@ sub xunlink {
 sub read_job {
     my ($jfile) = @_;
     ($jfile) = glob("$jfile/?job") if $jfile !~ /job$/;
+    my $type = substr(basename($jfile), 0, 1);
     fatal "read job: @_" if !defined $jfile;
     my $jfh = xopen '<', $jfile;
     my %job = ( file => $jfile, dir => dirname($jfile) );
-LOOP:
+    my @batches;
+STANZA:
     while (<$jfh>) {
         if (/^%job$/) {
             while (<$jfh>) {
-                last LOOP if /^$/;
+                last if /^$/;
                 $job{$1} = $2 if /^(\S+) (.*)/;
             }
         }
+        elsif (/^%batches$/) {
+            while (<$jfh>) {
+                last STANZA if /^$/;
+                next if !/^(\d+) count (\d+) size (\d+)$/;
+                push @batches, {
+                    number => $1,
+                    name => $type.$1,
+                    count => $2,
+                    size => $3,
+                };
+            }
+        }
     }
+    return (\%job, @batches) if wantarray;
     return \%job;
 }
 
 sub write_job {
-    my ($jfile, $job) = @_;
+    my ($jfile, $job, @batches) = @_;
     my %job = %$job;
     my $j = delete $job{job};
     my $jfh = xopen '>', $jfile;
@@ -901,6 +913,10 @@ job $j
 EOS
     print $jfh $_, ' ', $job{$_}, "\n" for sort keys %job;
     print $jfh "\n%batches\n";
+    foreach (@batches) {
+        my ($number, $count, $size) = @$_{qw(number count size)};
+        print $jfh "$number count $count size $size\n";
+    }
     close $jfh;
 }
 
