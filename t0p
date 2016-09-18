@@ -161,13 +161,13 @@ EOS
     }
     elsif ($list) {
         my (%jdir, %job, %ctime);
-        my @j = sort {
-            my $ja = $job{$a} //= read_job( $jdir{$a} //= jdir($a) );
-            my $jb = $job{$b} //= read_job( $jdir{$b} //= jdir($b) );
-            ( $ctime{$a} //= strftime '%Y-%m-%d %H:%M:%S', localtime $ja->{created} )
-                cmp
-            ( $ctime{$b} //= strftime '%Y-%m-%d %H:%M:%S', localtime $jb->{created} )
-        } jobs();
+        $verbose = 1 if @ARGV;
+        my @j = @ARGV ? @ARGV : jobs();
+        foreach my $j (@j) {
+            my $job = $job{$j} = read_job( $jdir{$j} = jdir($j) );
+            $ctime{$j} = strftime '%Y-%m-%d %H:%M:%S', localtime $job->{created};
+        }
+        @j = sort { $ctime{$a} cmp $ctime{$b} } @j if !@ARGV;
         foreach my $j (@j) {
             my $jdir = $jdir{$j};
             my $status = status($jdir);
@@ -205,12 +205,13 @@ EOS
         print $j, "\n";
     }
     elsif ($revoke_receipt) {
-        my $jdir = "$root/job/$revoke_receipt";
+        my $jdir = jdir($revoke_receipt);
+        my $status = status($jdir);
         my $type = substr(basename(glob("$jdir/?job")), 0, 1);
         my $job = read_job("${jdir}/${type}job");
         if (-e $job->{receipt}) {
-            set_status($jdir, 'revoked');
-            xcopy $job->{receipt}, "$jdir/\@revoked";
+            set_status($jdir, '*' => 'revoked');
+            xmove $job->{receipt}, "$jdir/\@revoked";
         }
     }
 }
@@ -555,6 +556,7 @@ sub prog_reset {
     ) or usage;
     init_defaults();
     mt('setblk', $block_size);
+    mt('rewind');
     mt('eod');
 }
 
