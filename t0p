@@ -179,24 +179,28 @@ EOS
         }
     }
     elsif ($clone_from) {
-        my $oldjdir = "$root/job/$clone_from";
+        my $oldjdir = jdir($clone_from);
         my $oldstatus = status($oldjdir);
         $oldstatus eq 'done' || fatal "job: can't clone $clone_from: not done";
         set_status($oldjdir, 'done' => 'cloning');
         my ($oldjob, @batches) = read_job("${oldjdir}/${type}job");
         my $j = uuid();
-        my $jdir = "$root/job/$j";
+        my $jdir = jdir($j);
         xmkdir $jdir;
         my $jfile = "$jdir/${type}job";
         write_job($jfile, {
             %$oldjob,
+            dir => $jdir,
+            file => "${jdir}/${type}job",
             job => $j,
             cloned => time,
             'cloned-from' => $clone_from,
         }, @batches);
         foreach my $batch (@batches) {
             my $number = $batch->{number};
-            xcopy("$oldjdir/${type}$number", "$jdir/b$number");
+            my $bfile = glob("$oldjdir/?$number");
+            fatal "Huh?" if !defined $bfile;
+            xcopy($bfile, "$jdir/${type}$number");
         }
         set_status($oldjdir, 'cloning' => 'cloned');
         print $j, "\n";
@@ -1093,7 +1097,7 @@ sub procwbatches {
         $job->{drive} = basename($drive);
         $job->{device} = $device;
     }
-    my $jdir = $job->{dir};
+    my $jdir = jdir($j);
     my $jlogfh = $dryrun ? \*STDERR : xopen '>>', "$jdir/log";
     my $jfile = "$jdir/wjob";
     # cd job root
