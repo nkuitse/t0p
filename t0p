@@ -77,13 +77,10 @@ sub prog_queue {
     }
     elsif ($add) {
         usage '-a [-q QUEUE] JOB...' if !@ARGV;
+        my @oops = grep { status(jdir($_)) ne 'unknown' } @ARGV;
+        fatal "already queued or processed: @oops" if @oops;
         foreach my $j (@ARGV) {
-            my $jdir = jdir($j);
-            fatal "no such job: $j" if !-d $jdir;
-            my @b = batches_in_job($jdir, 'b');
-            fatal "no unprocessed batches in job $j" if !@b;
-            xmkdir "$jdir/\@ready";
-            xsymlink $jdir, "$queue/$j";
+            add_job_to_queue($j);
         }
     }
     elsif ($create) {
@@ -93,21 +90,23 @@ sub prog_queue {
 }
 
 sub prog_job {
-    my ($add, $create, $list, $clone_from, $revoke_receipt, %prop);
+    my ($add, $create, $list, $clone, $revoke, $redo, %prop);
     my $type = 'w';
     GetOptions(
         @common_options,
         'a' => \$add,
         'c' => \$create,
         'l' => \$list,
-        'clone=s' => \$clone_from,
-        'revoke=s' => \$revoke_receipt,
+        'clone' => \$clone,
+        'revoke' => \$revoke,
+        'redo' => \$redo,
         'r' => sub { $type = 'r' },
         'p=s' => sub {
             usage if $_[1] !~ /^([^=]+)=(.*)$/;
             $prop{$1} = $2;
         },
     ) or usage;
+    usage if scalar(grep { defined $_ } $add, $create, $list, $clone, $revoke, $redo) > 1;
     init_defaults();
     if ($create) {
         # Create a new job
@@ -173,47 +172,36 @@ EOS
             my $jdir = $jdir{$j};
             my $status = status($jdir);
             next if $skip{$status};
-            my $type = substr(basename(glob("$jdir/?job")), 0, 1);
+            my $type = job_type($j);
             my $job = read_job("${jdir}/${type}job");
             my $root = $job->{root} // '?';
             printf "%-7.7s %5.5s %s %s %s\n", $status, $type2human{$type}, $j, $ctime{$j}, $root;
         }
     }
-    elsif ($clone_from) {
-        my $oldjdir = jdir($clone_from);
-        my $oldstatus = status($oldjdir);
-        $oldstatus eq 'done' || fatal "job: can't clone $clone_from: not done";
-        set_status($oldjdir, 'done' => 'cloning');
-        my ($oldjob, @batches) = read_job("${oldjdir}/${type}job");
-        my $j = uuid();
-        my $jdir = jdir($j);
-        xmkdir $jdir;
-        my $jfile = "$jdir/${type}job";
-        write_job($jfile, {
-            %$oldjob,
-            dir => $jdir,
-            file => "${jdir}/${type}job",
-            job => $j,
-            cloned => time,
-            'cloned-from' => $clone_from,
-        }, @batches);
-        foreach my $batch (@batches) {
-            my $number = $batch->{number};
-            my $bfile = glob("$oldjdir/?$number");
-            fatal "Huh?" if !defined $bfile;
-            xcopy($bfile, "$jdir/${type}$number");
+    elsif ($clone) {
+        usage if !@ARGV;
+        foreach my $j (@ARGV) {
+            print clone_job($j), "\n";
         }
-        set_status($oldjdir, 'cloning' => 'cloned');
-        print $j, "\n";
     }
-    elsif ($revoke_receipt) {
-        my $jdir = jdir($revoke_receipt);
-        my $status = status($jdir);
-        my $type = substr(basename(glob("$jdir/?job")), 0, 1);
-        my $job = read_job("${jdir}/${type}job");
-        if (-e $job->{receipt}) {
-            set_status($jdir, '*' => 'revoked');
-            xmove $job->{receipt}, "$jdir/\@revoked";
+    elsif ($revoke) {
+        usage if !@ARGV;
+        my @oops = grep { status(jdir($_)) ne 'done' } @ARGV;
+        fatal "can't be revoked: @oops" if @oops;
+        foreach my $j (@ARGV) {
+            revoke_job($j);
+        }
+    }
+    elsif ($redo) {
+        usage if !@ARGV;
+        my @clones;
+        my @oops = grep { status(jdir($_)) ne 'done' } @ARGV;
+        fatal "can't be done @oops" if @oops;
+        foreach my $j (@ARGV) {
+            my $clonej = clone_job($j);
+            print STDERR "$j -> $clonej";
+            revoke_job($j);
+            add_job_to_queue($clonej);
         }
     }
 }
@@ -1260,3 +1248,68 @@ sub uuid {
     return $uuid;
 }
 
+sub add_job_to_queue {
+    my ($j) = @_;
+    my $jdir = jdir($j);
+    fatal "no such job: $j" if !-d $jdir;
+    my @b = batches_in_job($jdir, 'b');
+    fatal "no unprocessed batches in job $j" if !@b;
+    xmkdir "$jdir/\@ready";
+    xsymlink $jdir, "$queue/$j";
+}
+
+sub job_type {
+    my ($j) = @_;
+    my $jdir = jdir($j);
+    return substr(basename(glob("$jdir/?job")), 0, 1);
+}
+
+sub clone_job {
+    my ($oldj) = @_;
+    my $oldjdir = jdir($oldj);
+    my $oldstatus = status($oldjdir);
+    $oldstatus eq 'done' || fatal "can't clone $oldj: not done";
+    set_status($oldjdir, 'done' => 'cloning');
+    my $type = job_type($oldj);
+    my ($oldjob, @batches) = read_job("${oldjdir}/${type}job");
+    my $j = uuid();
+    my $jdir = jdir($j);
+    xmkdir $jdir;
+    my $jfile = "$jdir/${type}job";
+    write_job($jfile, {
+        %$oldjob,
+        dir => $jdir,
+        file => "${jdir}/${type}job",
+        job => $j,
+        cloned => time,
+        'cloned-from' => $oldj,
+    }, @batches);
+    foreach my $batch (@batches) {
+        my $number = $batch->{number};
+        my $bfile = "$oldjdir/$type$number";
+        fatal "No batch file: job $j batch $number" if !-e $bfile;
+        xcopy($bfile, "$jdir/b$number");
+    }
+    set_status($oldjdir, 'cloning' => 'cloned');
+    print $j, "\n";
+}
+
+sub revoke_job {
+    my ($j) = @_;
+    my $jdir = jdir($j);
+    my $status = status($jdir);
+    my $type = job_type($j);
+    my $job = read_job("${jdir}/${type}job");
+    if (-e $job->{receipt}) {
+        set_status($jdir, '*' => 'revoked');
+        xmove $job->{receipt}, "$jdir/\@revoked";
+        print STDERR "revoked: $j\n";
+    }
+    elsif ($status ne 'revoked') {
+        set_status($jdir, '*' => 'revoked');
+        print STDERR "revoked: $j (no receipt)\n";
+    }
+    else {
+        print STDERR "already revoked: $j\n";
+    }
+}
