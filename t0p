@@ -1291,7 +1291,7 @@ sub clone_job {
         xcopy($bfile, "$jdir/b$number");
     }
     set_status($oldjdir, 'cloning' => 'cloned');
-    print $j, "\n";
+    return $j;
 }
 
 sub revoke_job {
