@@ -617,17 +617,19 @@ sub prog_tapes {
     ) or usage;
     init_defaults();
     my @tapes = grep { -d $_ } glob("$root/tape/*");
-    printf "%-6.6s %-7.7s %8.8s %8.8s %7.7s %6.6s\n", qw(Tape Status Capacity Used Files Avail%);
+    printf "%-6.6s %-7.7s  %8.8s %8.8s %7.7s  %6.6s  %s\n", qw(Tape Status Capacity Used Files Avail%), 'Last job';
     my %jb2size;
     foreach my $tp (@tapes) {
         my $status = status($tp);
         fatal "multiple statuses: $tp" if $status eq 'multiple';
+        $status = '--' if $status eq 'offline';
         my $metrics = read_tape_metrics(basename($tp));
         my ($maxblocks, $blocksize) = @$metrics{qw(maxblocks blocksize)};
         my $capacity = size_human($maxblocks, $blocksize);
         my $tlogfh = xopen '<', "$tp/log";
         my ($tblk, $j, $b);
         my ($fnum, $endpos, $used) = (0, 0, 0);
+        my $last = '--';
         while (<$tlogfh>) {
             next if !/^(\d+) (\d+) (\S+) (\d+)/;
             ($fnum, $tblk, $j, $b) = ($1, $2, $3, $4);
@@ -636,9 +638,10 @@ sub prog_tapes {
             my $jdir = jdir($j);
             my $jlog = read_log("$jdir/log");
             $endpos = $jlog->{'endpos'};
+            $last = strftime('%Y-%m-%d', localtime $jlog->{end}) . ' ' . $j;
             $used = size_human($endpos, $blocksize);
         }
-        printf "%-6.6s %-7.7s %8.8s %8.8s %7d %6.6s\n", basename($tp), $status, $capacity, $used, $fnum, sprintf('%.1f%%', 100-($endpos/$maxblocks*100));
+        printf "%-6.6s %-7.7s  %8.8s %8.8s %7d  %6.6s  %s\n", basename($tp), $status, $capacity, $used, $fnum, sprintf('%.1f%%', 100-($endpos/$maxblocks*100)), $last;
     }
 }
 
