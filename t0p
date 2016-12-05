@@ -214,7 +214,7 @@ sub set_status {
 
 sub status {
     my ($dir) = @_;
-    my @stat = glob("$dir/\@*");
+    my @stat = glob("$dir/\@[a-z]*");
     return 'unknown' if !@stat;
     return 'multiple' if @stat > 1;
     return substr(basename($stat[0]), 1);
