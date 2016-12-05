@@ -638,7 +638,7 @@ sub prog_tapes {
             my $jdir = jdir($j);
             my $jlog = read_log("$jdir/log");
             $endpos = $jlog->{'endpos'};
-            $last = strftime('%Y-%m-%d', localtime $jlog->{end}) . ' ' . $j;
+            $last = strftime('%Y-%m-%d', localtime($jlog->{end} || time)) . ' ' . $j;
             $used = size_human($endpos, $blocksize);
         }
         printf "%-6.6s %-7.7s  %8.8s %8.8s %7d  %6.6s  %s\n", basename($tp), $status, $capacity, $used, $fnum, sprintf('%.1f%%', 100-($endpos/$maxblocks*100)), $last;
