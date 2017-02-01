@@ -674,7 +674,12 @@ sub prog_load {
         eject_tape();
     }
     system(qw(tput civis));
-    print STDERR "** Insert tape and press ENTER **";
+    if (defined $newtape) {
+        print STDERR "** Insert tape $newtape and press ENTER **\n";
+    }
+    else {
+        print STDERR "** Insert a tape and press ENTER **\n";
+    }
     scalar <STDIN>;
     system(qw(tput cnorm));
     close mt('load') or fatal "load $!";
