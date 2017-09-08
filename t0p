@@ -326,6 +326,8 @@ sub prog_write {
         exit 0;
     }
     if (!$dryrun) {
+        mt('setblk', $block_size);
+        mt('eod');
         set_status("$drive/tape", 'loaded' => 'busy');
         set_status($drive, 'idle' => 'busy');
         read_label("$drive/tape/\@busy/../label")
