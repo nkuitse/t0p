@@ -90,13 +90,14 @@ sub prog_queue {
 }
 
 sub prog_job {
-    my ($add, $create, $list, $clone, $revoke, $redo, %prop);
+    my ($add, $create, $list, $tail, $clone, $revoke, $redo, %prop);
     my $type = 'w';
     GetOptions(
         @common_options,
         'a' => \$add,
         'c' => \$create,
         'l' => \$list,
+        't' => \$tail,
         'clone' => \$clone,
         'revoke' => \$revoke,
         'redo' => \$redo,
@@ -106,7 +107,7 @@ sub prog_job {
             $prop{$1} = $2;
         },
     ) or usage;
-    usage if scalar(grep { defined $_ } $add, $create, $list, $clone, $revoke, $redo) > 1;
+    usage if scalar(grep { defined $_ } $add, $create, $list, $tail, $clone, $revoke, $redo) > 1;
     init_defaults();
     if ($create) {
         # Create a new job
@@ -173,10 +174,62 @@ EOS
             my $status = status($jdir);
             next if $skip{$status};
             my $type = job_type($j);
-            my $job = read_job("${jdir}/${type}job");
+            my $job = $job{$j} or die;  # read_job("${jdir}/${type}job");
             my $root = $job->{root} // '?';
-            printf "%-7.7s %5.5s %s %s %s\n", $status, $type2human{$type}, $j, $ctime{$j}, $root;
+            if ($verbose) {
+                my @batches = batches_in_job($jdir);
+                my $batches_str = sprintf '%d of %d completed', scalar(grep { /^w/ } @batches), scalar(@batches);
+                print <<"EOS";
+job     $j
+status  $status
+type    $type
+root    $root
+batches $batches_str
+
+EOS
+            }
+            else {
+                printf "%-7.7s %5.5s %s %s %s\n", $status, $type2human{$type}, $j, $ctime{$j}, $root;
+            }
         }
+    }
+    elsif ($tail) {
+        usage if @ARGV != 1;
+        my ($j) = @ARGV;
+        my $jdir = jdir($j);
+        my $log = "$jdir/log";
+        my ($job, @batches) = read_job("$jdir/wjob");
+        my $n = scalar @batches;
+        my %batch = map { $_->{'number'} => $_ } @batches;
+        open my $fh, '-|', qw(tail -f -n 50), $log or die;
+        my $finishing;
+        print STDERR "job $j : $n batch(es)\n";
+        my $t0;
+        while (<$fh>) {
+            if (/^B ([0-9]+) begin ([0-9]+) files ([0-9]+)$/) {
+                $t0 = $2;
+                printf STDERR "\rbatch %d : %d files...", $1, $3;
+            }
+            elsif (!defined $t0) {
+                next;
+            }
+            elsif (/^B ([0-9]+) end ([0-9]+) errors ([0-9]+)$/) {
+                printf STDERR " done : %d seconds, %d error(s)\n", $2 - $t0, $3;
+                my $batch = delete $batch{$1}
+                    or next;
+                1;
+            }
+            elsif (/^J \S+ end ([0-9]+)$/) {
+                $finishing = 1;
+            }
+            elsif ($finishing) {
+                1;
+            }
+            else {
+                print STDERR '.';
+            }
+        }
+        print "done\n";
     }
     elsif ($clone) {
         usage if !@ARGV;
@@ -326,8 +379,8 @@ sub prog_write {
         exit 0;
     }
     if (!$dryrun) {
-        mt('setblk', $block_size);
-        mt('eod');
+        close mt('setblk', $block_size) or fatal "setblk $!";
+        close mt('eod') or fatal "eod $!";
         set_status("$drive/tape", 'loaded' => 'busy');
         set_status($drive, 'idle' => 'busy');
         read_label("$drive/tape/\@busy/../label")
@@ -416,7 +469,10 @@ sub prog_scan {
     }
     get_status();
     while (1) {
-        mt('fsf'), get_status() if $status{file_blocknum} != 0;
+        if ($status{file_blocknum} != 0) {
+            close mt('fsf') or die "fsf $!";
+            get_status();
+        }
         my @output = qx{afio -t -A -b $block_size -v -B $device 2> /dev/null};
         last if $?;
         print("EOF\n"), last if !@output;
@@ -447,6 +503,7 @@ sub prog_seek {
     if ($eod) {
         usage if @ARGV;
         init_defaults();
+        close mt('setblk', $block_size) or fatal "setblk $!";
         return mt('eod');
     }
     usage if @ARGV < 1 || @ARGV > 2;
@@ -459,6 +516,7 @@ sub prog_seek {
     $filenum += $status{filenum} if $filenum =~ /^[-+]/;
     $file_blocknum += $status{file_blocknum} if $file_blocknum =~ /^[-+]/;
     # Go to the desired file
+    close mt('setblk', $block_size) or fatal "setblk $!";
     if ($filenum > $status{filenum}) {
         mt('fsf', $filenum - $status{filenum});
     }
@@ -547,9 +605,9 @@ sub prog_reset {
         @common_options,
     ) or usage;
     init_defaults();
-    mt('setblk', $block_size);
-    mt('rewind');
-    mt('eod');
+    close mt('setblk', $block_size) or fatal "setblk $!";
+    close mt('rewind') or fatal "rewind $!";
+    close mt('eod') or fatal "eod $!";
 }
 
 sub prog_find {
@@ -1022,7 +1080,7 @@ sub get_status {
 sub read_label {
     my ($f) = @_;
     if (!@_) {
-        mt('rewind') or fatal "mt rewind: $!";
+        close mt('rewind') or fatal "mt rewind: $!";
     }
     my $fh = xopen '<', $f // $device;
     my $read = read($fh, my $buf, $block_size)
@@ -1046,7 +1104,7 @@ sub write_label {
     $tape = $label{label};
     my $fh;
     if (!$dryrun) {
-        mt('rewind') or fatal "rewind: $!";
+        close mt('rewind') or fatal "rewind: $!";
         $fh = xopen '>', $device;
     }
     my $buf = "\x00" x $block_size;
@@ -1065,7 +1123,7 @@ sub write_label {
     else {
         syswrite($fh, $buf) or fatal "write: $!";
         xclose $fh;
-        mt('weof') or fatal "weof: $!";
+        close mt('weof') or fatal "weof: $!";
         xmkdir "$root/tape/$tape" if ! -e "$root/tape/$tape";
         $fh = xopen '>', "$root/tape/$tape/label";
         print $fh $str;
@@ -1090,7 +1148,7 @@ sub procwbatches {
     get_status();
     if (!$dryrun) {
         $status{online} or fatal "no tape\n";
-        mt('eod');
+        close mt('eod');
         get_status();
         $status{eod} or fatal "not EOD\n";
         $job->{drive} = basename($drive);
