@@ -769,6 +769,29 @@ sub prog_load {
     xsymlink "../../tape/$tape", "$drive/tape";
 }
 
+sub prog_move {
+    GetOptions(
+        @common_options,
+    ) or usage;
+    init_defaults();
+    usage if @ARGV != 2;
+    my ($othertape, $newstatus) = @ARGV;
+    my %status_map = qw(
+        offsite     offsite
+        onsite      offline
+        offline     offline
+    );
+    fatal "Unrecognized destination/status: $newstatus"
+        if !$status_map{$newstatus};
+    if (defined $tape) {
+        fatal "Tape $tape is loaded" if $othertape eq $tape;
+    }
+    my $oldstatus = status($othertape);
+    fatal "Tape $tape is already $newstatus" if $oldstatus eq $status_map{$newstatus};
+    $newstatus = 'offline' if $newstatus eq 'onsite';
+    set_status("$root/tape/$othertape", $oldstatus => $newstatus);
+}
+
 # --- Functions
 
 sub init_tape {
