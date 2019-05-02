@@ -786,7 +786,7 @@ sub prog_move {
     if (defined $tape) {
         fatal "Tape $tape is loaded" if $othertape eq $tape;
     }
-    my $oldstatus = status($othertape);
+    my $oldstatus = status("$root/tape/$othertape");
     fatal "Tape $tape is already $newstatus" if $oldstatus eq $status_map{$newstatus};
     $newstatus = 'offline' if $newstatus eq 'onsite';
     set_status("$root/tape/$othertape", $oldstatus => $newstatus);
