@@ -39,6 +39,12 @@ my ($drive, $tape, $device, $queue, $block_size, $verbose, $dryrun);
 my (%props);
 my (%label, %status);
 my %type2human = qw(w write r read);
+# Recognized statuses
+my %status_map = qw(
+    offsite     offsite
+    onsite      offline
+    offline     offline
+);
 my @tmp;  # Anything that should be deleted when we exit
 my @common_options = (
     'd=s' => \$drive,
@@ -774,22 +780,23 @@ sub prog_move {
         @common_options,
     ) or usage;
     init_defaults();
-    usage if @ARGV != 2;
-    my ($othertape, $newstatus) = @ARGV;
-    my %status_map = qw(
-        offsite     offsite
-        onsite      offline
-        offline     offline
-    );
-    fatal "Unrecognized destination/status: $newstatus"
-        if !$status_map{$newstatus};
-    if (defined $tape) {
-        fatal "Tape $tape is loaded" if $othertape eq $tape;
+    usage if @ARGV < 2;
+    my $newstatus = $status_map{$ARGV[-1]}
+        or fatal "Unrecognized destination/status: $ARGV[-1]";
+    pop @ARGV;
+    foreach my $t (@ARGV) {
+        my $oldstatus = status("$root/tape/$t");
+        if ($oldstatus eq 'loaded') {
+            fatal "Tape $t is loaded and can't be moved\n";
+        }
+        elsif ($oldstatus eq $newstatus) {
+            print STDERR "Tape $t is already $newstatus\n";
+        }
+        else {
+            set_status("$root/tape/$t", $oldstatus => $newstatus);
+            print STDERR "Tape $t has been moved $newstatus\n";
+        }
     }
-    my $oldstatus = status("$root/tape/$othertape");
-    fatal "Tape $tape is already $newstatus" if $oldstatus eq $status_map{$newstatus};
-    $newstatus = 'offline' if $newstatus eq 'onsite';
-    set_status("$root/tape/$othertape", $oldstatus => $newstatus);
 }
 
 # --- Functions
