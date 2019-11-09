@@ -650,6 +650,47 @@ sub prog_load {
     xsymlink "../../tape/$tape", "$drive/tape";
 }
 
+sub prog_watch {
+    init_defaults();
+    get_status();
+    usage if @ARGV;
+    my $drive_name = defined $drive ? basename($drive) : '(none)';
+    my $tape_name = $tape // '(none)';
+    my $status = $status{online} ? 'online' : 'offline';
+    my @jobs = jobs();
+    while (1) {
+        my @queued = jobs_in_queue(@jobs);
+        last if !@queued;
+        my $nqueued = scalar @queued;
+        my $nbatches = 0;
+        foreach my $j (@queued) {
+            my $jdir = jdir($j);
+            my @batches = batches_in_job($jdir);
+            $nbatches += scalar @batches;
+        }
+        print <<"EOS";
+drive       : $drive_name
+status      : $status
+tape        : $tape_name
+queued      : $nqueued = $nbatches batch(es)
+EOS
+        my ($jcur, $bcur) = job_running();
+        while ($jcur) {
+            my @batches = batches_in_job($jcur);
+            $nbatches = scalar @batches;
+            if ($jcur) {
+                print "\rprogress    : $jcur $nqueued batch $bcur/$nbatches";
+                sleep 5;
+                ($jcur, $bcur) = job_running();
+            }
+            print "\n";
+        }
+    }
+    print(<<"EOS");
+status      : idle
+EOS
+}
+
 # --- Functions
 
 sub init_tape {
@@ -892,9 +933,9 @@ sub init_defaults {
     $drive = "$root/drive/$drive" if $drive !~ m{^/};
     $device //= -e "$drive/device" ? "$drive/device" : '/dev/nst0';
     $block_size //= DEFBLKSIZE;
-    my @loaded = grep { -d $_ } glob("$drive/tape/\@loaded");
-    fatal "tape: multiple tapes loaded???" if @loaded > 1;
-    $tape = basename(readlink dirname($loaded[0])) if @loaded;
+    my @tapes = grep { -d $_ } "$drive/tape/\@loaded", "$drive/tape/\@busy";
+    fatal "tape: multiple tapes loaded???" if @tapes > 1;
+    $tape = basename(readlink dirname($tapes[0])) if @tapes;
     return if defined $queue && $queue =~ m{^/};
     $queue = defined $queue ? "$drive/queue/$queue" : "$drive/queue";
 }
@@ -1152,11 +1193,28 @@ sub jobs {
 }
 
 sub jobs_in_queue {
-    my @jobs;
-    foreach my $j (jobs()) {
-        push @jobs, $j if -e "$queue/$j";
+    if (!@_) {
+        @_ = glob "$queue/*";
+        s{.+/}{} for @_;
+        return @_;
     }
-    return @jobs;
+    else {
+        return grep { -e "$queue/$_" } @_;
+    }
+    #@_ = jobs() if !@_;
+    #my @jobs;
+    #foreach my $j (@_) {
+    #    push @jobs, $j if -e "$queue/$j";
+    #}
+    #return @jobs;
+}
+
+sub job_running {
+    my %s = map { substr(basename($_),1) => $_ } glob "$queue/*/\@*";
+    if (defined(my $j = delete $s{busy})) {
+        return $j, keys %s if wantarray;
+        return $j;
+    }
 }
 
 sub batches_in_job {
