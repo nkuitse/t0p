@@ -307,15 +307,15 @@ sub prog_label {
             ($found, $blather) = ($label, $label);
         }
         if (!defined $found) {
-            print STDERR "unrecognized label (hash $hash)\n" if $verbose;
+            blather("unrecognized label (hash $hash)");
             exit 2;
         }
         elsif ($found ne $expected) {
-            print STDERR "wrong label: found $blather\n" if $verbose;
+            blather("wrong label: found $blather");
             exit 2;
         }
         else {
-            print STDERR "verified: $blather\n" if $verbose;
+            blather("verified: $blather");
         }
     }
     elsif ($write) {
@@ -381,10 +381,11 @@ sub prog_write {
         @job_dirs = map { "$queue/$_" } @ARGV;
     }
     if (!@job_dirs) {
-        print STDERR "no jobs to write\n" if $verbose;
+        blather("no jobs to write");
         exit 0;
     }
     if (!$dryrun) {
+        blather("prepare tape");
         close mt('setblk', $block_size) or fatal "setblk $!";
         close mt('eod') or fatal "eod $!";
         set_status("$drive/tape", 'loaded' => 'busy');
@@ -397,6 +398,7 @@ sub prog_write {
         my $j = basename($jdir);
         my @b = batches_in_job($jdir, 'b');
         next if !@b;
+        blather("job $j");
         my $job = read_job("$jdir/wjob");
         my $job_receipt = $receipt // $job->{receipt};
         if (!$dryrun) {
@@ -408,6 +410,7 @@ sub prog_write {
             set_status($jdir, 'busy' => 'done');
             xunlink $jlink;
             if (defined $job_receipt) {
+                blather("write receipt: $job_receipt");
                 xcat(
                     xopen('<', "$jdir/wjob"),
                     "\n%log\n",
@@ -1218,6 +1221,7 @@ sub procwbatches {
     my $j = $job->{job};
     get_status();
     if (!$dryrun) {
+        blather("check tape status");
         $status{online} or fatal "no tape\n";
         close mt('eod');
         get_status();
@@ -1235,6 +1239,7 @@ sub procwbatches {
     printf $jlogfh "J %s begin %d\n", $j, time;
     xchdir $dir;
     foreach my $b (@b) {
+        blather("batch $b");
         procwbatch($job, $jlogfh, "$jdir/$b");
     }
     get_status();
@@ -1469,3 +1474,8 @@ sub revoke_job {
         print STDERR "already revoked: $j\n";
     }
 }
+
+sub blather {
+    print STDERR @_, "\n" if $verbose;
+}
+
